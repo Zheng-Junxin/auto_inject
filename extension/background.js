@@ -515,7 +515,7 @@
     const threshold = usedLlmForQueue ? settings.llm.minScore : settings.filters.minScore;
     const queue = uniqueJobs(scored)
       .filter((job) => {
-        const score = Number(job.combinedScore || job.llmScore || job.score) || 0;
+        const score = shared.effectiveApplicationScore(job, settings);
         if (score < threshold) return false;
         if (usedLlmForQueue && String(job.llmDecision || "").toLowerCase() !== "apply") return false;
         if (String(job.llmDecision || "").toLowerCase() === "skip") return false;
@@ -523,8 +523,8 @@
         return true;
       })
       .sort((left, right) => {
-        const leftScore = Number(left.combinedScore || left.llmScore || left.score) || 0;
-        const rightScore = Number(right.combinedScore || right.llmScore || right.score) || 0;
+        const leftScore = shared.effectiveApplicationScore(left, settings);
+        const rightScore = shared.effectiveApplicationScore(right, settings);
         return rightScore - leftScore;
       })
       .slice(0, Math.min(settings.automation.maxJobsPerRun, remainingDaily));
@@ -690,12 +690,12 @@
         case "LLM_SCORE_JOBS":
           return await scoreJobsWithLlm(message.jobs || []);
         case "START_COLLECT_JOBS":
-          return await collectJobsFromTab(message.tabId, {
+          return await collectJobsFromTab(message.tabId ?? sender.tab?.id, {
             withLlm: Boolean(message.withLlm),
             highlight: Boolean(message.highlight)
           });
         case "START_AUTO_APPLY":
-          return await startAutomation(message.jobs || [], message.sourceTabId ?? null, {
+          return await startAutomation(message.jobs || [], message.sourceTabId ?? sender.tab?.id ?? null, {
             force: Boolean(message.force)
           });
         case "STOP_AUTOMATION":

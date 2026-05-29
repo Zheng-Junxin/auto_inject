@@ -513,6 +513,17 @@
     };
   }
 
+  function effectiveApplicationScore(job, settings) {
+    const localScore = Number(job.score) || 0;
+    const llmScore = Number(job.llmScore) || 0;
+    const combinedScore = Number(job.combinedScore) || 0;
+    const decision = String(job.llmDecision || "").toLowerCase();
+    if (settings?.llm?.enabled && decision === "apply" && llmScore > 0) {
+      return Math.max(llmScore, combinedScore, localScore);
+    }
+    return combinedScore || llmScore || localScore;
+  }
+
   global.AutoApplyShared = {
     PLATFORM_DEFS,
     DEFAULT_SETTINGS,
@@ -520,6 +531,7 @@
     buildTermSet,
     cloneDefaultSettings: () => clone(DEFAULT_SETTINGS),
     combineLlmScore,
+    effectiveApplicationScore,
     extractProfileHints,
     extractResumeSignals,
     makeJobId,

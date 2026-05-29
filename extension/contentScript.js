@@ -289,6 +289,9 @@
     for (const candidate of candidates) {
       const text = buttonText(candidate);
       if (!text || isDisabledAction(candidate)) continue;
+      const href = candidate.getAttribute("href") || "";
+      if (/\/job_detail\//u.test(href)) continue;
+      if (candidate.tagName === "A" && text.length > 30) continue;
       if (negativeTerms.some((term) => text.includes(shared.normalizeText(term)))) continue;
       if (positiveTerms.some((term) => text.includes(shared.normalizeText(term)))) {
         const lastClickedAt = Number(candidate.dataset.autoApplyClickedAt || 0);
@@ -309,16 +312,17 @@
       const text = buttonText(candidate);
       if (!text || isDisabledAction(candidate)) continue;
       if (negativeTerms.some((term) => text.includes(shared.normalizeText(term)))) continue;
+      const href = candidate.getAttribute("href") || "";
+      if (/\/job_detail\//u.test(href)) continue;
       const aria = shared.normalizeText(candidate.getAttribute("aria-label") || "");
       const rel = shared.normalizeText(candidate.getAttribute("rel") || "");
       const isNext =
         rel === "next" ||
-        positiveTerms.some((term) => text === shared.normalizeText(term) || text.includes(shared.normalizeText(term))) ||
+        positiveTerms.some((term) => text === shared.normalizeText(term)) ||
         aria.includes("next") ||
         aria.includes("下一页");
       if (!isNext) continue;
 
-      const href = candidate.getAttribute("href");
       return {
         element: candidate,
         url: href ? new URL(href, location.href).href : ""
@@ -553,7 +557,7 @@
     return bestScore > 0 ? best : null;
   }
 
-  function detectBlockingState() {
+  function detectBlockingState({ actionAvailable = false } = {}) {
     const text = shared.normalizeText(document.body.innerText.slice(0, 12000));
     const rules = [
       { terms: ["验证码", "安全验证", "滑块", "captcha", "人机验证"], reason: "检测到验证码或安全验证" },
@@ -561,8 +565,11 @@
       { terms: ["实名认证", "身份认证", "完善在线简历"], reason: "检测到账号或简历资料要求" },
       { terms: ["访问过于频繁", "操作过于频繁", "稍后再试"], reason: "检测到平台频控提示" }
     ];
-    for (const rule of rules) {
+    for (const [ruleIndex, rule] of rules.entries()) {
       if (rule.terms.some((term) => text.includes(shared.normalizeText(term)))) {
+        if ((rule.softWhenActionAvailable || ruleIndex === 2) && actionAvailable) {
+          continue;
+        }
         return { blocked: true, reason: rule.reason };
       }
     }
@@ -583,7 +590,8 @@
 
   async function applyCurrentPage({ confirmed = false, automationJob = null } = {}) {
     const settings = await getSettings();
-    const blocking = detectBlockingState();
+    const actionButton = findActionButton();
+    const blocking = detectBlockingState({ actionAvailable: Boolean(actionButton) });
     if (settings.automation.stopOnBlocking && blocking.blocked) {
       return { applied: false, reason: blocking.reason, job: automationJob || extractCurrentJob() };
     }
@@ -592,9 +600,8 @@
     const localScore = shared.scoreJob(job, settings);
     const scored = { ...job, id: shared.makeJobId(job), ...localScore };
     const effectiveJob = automationJob ? { ...scored, ...automationJob } : scored;
-    const effectiveScore = Number(effectiveJob.combinedScore || effectiveJob.llmScore || effectiveJob.score) || 0;
+    const effectiveScore = shared.effectiveApplicationScore(effectiveJob, settings);
     const threshold = settings.llm.enabled ? settings.llm.minScore : settings.filters.minScore;
-    const actionButton = findActionButton();
     const todayCount = todaysApplicationCount(settings);
 
     if (effectiveScore < threshold) {

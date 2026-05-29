@@ -133,6 +133,12 @@ assert(localValidation.originPattern === "http://localhost/*", "Localhost permis
 const redacted = context.AutoApplyShared.redactSettings({ llm: { apiKey: "token" } });
 assert(redacted.llm.apiKey === "", "redactSettings must remove llm.apiKey");
 
+const llmApplyScore = context.AutoApplyShared.effectiveApplicationScore(
+  { score: 31, llmScore: 85, combinedScore: 66, llmDecision: "apply" },
+  settings
+);
+assert(llmApplyScore === 85, `LLM apply score should use the LLM score, got ${llmApplyScore}`);
+
 const automationSettings = context.AutoApplyShared.mergeSettings({
   automation: {
     autoCollectBeforeApply: true,
@@ -164,5 +170,15 @@ assert(!backgroundSource.includes("tabsCreate({ url: job.url"), "Automation must
 
 const popupSource = readExtensionFile("popup.js");
 assert(popupSource.includes("force: true"), "Popup auto apply must explicitly authorize a user-triggered run");
+assert(
+  backgroundSource.includes("message.sourceTabId ?? sender.tab?.id ?? null"),
+  "Automation should infer the source tab for content-script initiated runs"
+);
+
+const contentSource = readExtensionFile("contentScript.js");
+assert(
+  contentSource.includes("detectBlockingState({ actionAvailable: Boolean(actionButton) })"),
+  "Apply flow should not treat optional resume prompts as hard blockers when an action button is available"
+);
 
 console.log("Extension verification passed.");
