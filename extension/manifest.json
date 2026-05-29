@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "简历精准投递助手",
+  "version": "0.1.0",
+  "description": "在招聘网站本地匹配岗位、填充资料，并在用户确认后投递或沟通。",
+  "action": {
+    "default_title": "简历精准投递助手",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_page": "options.html",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://zhipin.com/*",
+        "https://*.zhipin.com/*",
+        "https://51job.com/*",
+        "https://*.51job.com/*",
+        "https://zhaopin.com/*",
+        "https://*.zhaopin.com/*",
+        "https://liepin.com/*",
+        "https://*.liepin.com/*",
+        "https://maimai.cn/*",
+        "https://*.maimai.cn/*",
+        "https://waiqi.com/*",
+        "https://*.waiqi.com/*",
+        "https://offersir.com/*",
+        "https://*.offersir.com/*"
+      ],
+      "css": [
+        "contentStyles.css"
+      ],
+      "js": [
+        "shared.js",
+        "contentScript.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

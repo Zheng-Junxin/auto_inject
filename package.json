@@ -1,0 +1,10 @@
+{
+  "name": "resume-auto-apply-edge-extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Edge MV3 extension for local resume matching, form filling, and user-confirmed applications on major recruiting sites.",
+  "type": "module",
+  "scripts": {
+    "check": "node scripts/verify-extension.mjs"
+  }
+}

@@ -1,0 +1,47 @@
+.auto-apply-highlight {
+  outline: 2px solid #0f766e !important;
+  outline-offset: 3px !important;
+  position: relative !important;
+}
+
+.auto-apply-low {
+  outline-color: #b45309 !important;
+}
+
+.auto-apply-reject {
+  outline-color: #be123c !important;
+}
+
+.auto-apply-badge {
+  align-items: center !important;
+  background: #0f172a !important;
+  border: 1px solid rgba(255, 255, 255, 0.22) !important;
+  border-radius: 6px !important;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.18) !important;
+  color: #ffffff !important;
+  display: inline-flex !important;
+  font: 600 12px/1.2 Arial, "Microsoft YaHei", sans-serif !important;
+  gap: 6px !important;
+  left: 8px !important;
+  max-width: 220px !important;
+  padding: 5px 7px !important;
+  position: absolute !important;
+  top: 8px !important;
+  z-index: 2147483647 !important;
+}
+
+.auto-apply-badge[data-level="high"] {
+  background: #047857 !important;
+}
+
+.auto-apply-badge[data-level="medium"] {
+  background: #1d4ed8 !important;
+}
+
+.auto-apply-badge[data-level="low"] {
+  background: #92400e !important;
+}
+
+.auto-apply-badge[data-level="reject"] {
+  background: #9f1239 !important;
+}

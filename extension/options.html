@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>简历精准投递助手设置</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main class="page">
+      <header class="topbar">
+        <div>
+          <h1>简历精准投递助手</h1>
+          <p>简历、API key 和投递记录默认保存在本地浏览器。</p>
+        </div>
+        <button id="saveSettings" class="primary">保存设置</button>
+      </header>
+
+      <form id="settingsForm" class="layout">
+        <section class="panel">
+          <h2>简历解析</h2>
+          <div class="upload-row">
+            <input id="resumeFile" type="file" accept=".txt,.md,.json,.docx,.pdf">
+            <button id="parseResume" type="button">解析并填充</button>
+          </div>
+          <p class="hint">支持 txt、md、json、docx、pdf。PDF 是无依赖最佳提取，扫描件建议复制文本或转 txt。</p>
+
+          <h2>个人资料</h2>
+          <div class="grid two">
+            <label>姓名<input name="name" autocomplete="name"></label>
+            <label>手机<input name="phone" autocomplete="tel"></label>
+            <label>邮箱<input name="email" autocomplete="email"></label>
+            <label>目标城市<input name="expectedCity" placeholder="上海, 杭州, 远程"></label>
+            <label>求职方向<input name="expectedRole" placeholder="AI 产品经理 / Python 后端"></label>
+            <label>期望薪资<input name="expectedSalary" placeholder="25-35K"></label>
+          </div>
+          <label>核心技能<textarea name="skills" rows="3" placeholder="Python, LLM, RAG, React, 数据分析"></textarea></label>
+          <label>简历摘要<textarea name="resumeText" rows="7" placeholder="粘贴可发送给 LLM 和招聘方看的简历摘要，避免身份证、住址等不必要敏感信息。"></textarea></label>
+          <label>沟通模板<textarea name="coverLetterTemplate" rows="5"></textarea></label>
+          <p class="hint">可用变量：{{name}}、{{role}}、{{skills}}、{{title}}、{{company}}、{{city}}、{{salary}}。</p>
+        </section>
+
+        <section class="panel">
+          <h2>匹配规则</h2>
+          <label>优先关键词<textarea name="includeKeywords" rows="4"></textarea></label>
+          <label>排除关键词<textarea name="excludeKeywords" rows="4"></textarea></label>
+          <label>偏好城市<textarea name="preferredCities" rows="3" placeholder="不填则使用个人资料里的目标城市"></textarea></label>
+
+          <div class="grid two compact">
+            <label>本地最低分<input name="minScore" type="number" min="0" max="100"></label>
+            <label>每日投递上限<input name="maxDailySubmissions" type="number" min="1" max="100"></label>
+            <label>动作延迟毫秒<input name="actionDelayMs" type="number" min="250" max="5000" step="50"></label>
+          </div>
+
+          <label class="toggle">
+            <input name="requireManualConfirmation" type="checkbox">
+            <span>手动投递时仍需确认</span>
+          </label>
+
+          <h2>LLM 匹配</h2>
+          <label class="toggle">
+            <input name="llmEnabled" type="checkbox">
+            <span>启用 LLM 匹配</span>
+          </label>
+          <label>base_url<input name="llmBaseUrl" placeholder="https://api.openai.com/v1"></label>
+          <div class="grid two">
+            <label>model<input name="llmModel" placeholder="gpt-4o-mini"></label>
+            <label>超时毫秒<input name="llmTimeoutMs" type="number" min="5000" max="120000" step="1000"></label>
+          </div>
+          <label>API key<input name="llmApiKey" type="password" autocomplete="off" placeholder="留空可用于本地兼容服务"></label>
+          <label>LLM 自动投递最低分<input name="llmMinScore" type="number" min="0" max="100"></label>
+          <label class="toggle">
+            <input name="allowSendingResumeToLlm" type="checkbox">
+            <span>允许把简历摘要和岗位信息发送到配置的 LLM 服务</span>
+          </label>
+          <button id="testLlm" type="button">授权并测试 LLM</button>
+          <p class="hint">远程 LLM 会收到简历摘要和岗位文本。非本机 http 地址会被拒绝。</p>
+        </section>
+
+        <section class="panel">
+          <h2>自动化</h2>
+          <label class="toggle">
+            <input name="automationEnabled" type="checkbox">
+            <span>启用自动处理队列</span>
+          </label>
+          <label class="toggle">
+            <input name="autoClickApply" type="checkbox">
+            <span>允许自动点击投递/沟通按钮</span>
+          </label>
+          <label class="toggle">
+            <input name="closeTabsAfterApply" type="checkbox">
+            <span>处理后自动关闭新标签页</span>
+          </label>
+          <label class="toggle">
+            <input name="stopOnBlocking" type="checkbox">
+            <span>遇到登录、验证码、频控或资料要求时停止</span>
+          </label>
+          <label class="toggle">
+            <input name="skipAlreadyApplied" type="checkbox">
+            <span>跳过历史记录中已投递岗位</span>
+          </label>
+          <div class="grid two compact">
+            <label>单次最多岗位<input name="maxJobsPerRun" type="number" min="1" max="30"></label>
+            <label>页面等待毫秒<input name="navigationDelayMs" type="number" min="500" max="15000" step="500"></label>
+          </div>
+          <p class="hint">自动化不会绕过验证码、登录、滑块、安全验证或平台风控。请确认符合招聘网站规则。</p>
+
+          <div class="history">
+            <div class="history-head">
+              <h2>最近记录</h2>
+              <button id="clearHistory" type="button">清空记录</button>
+            </div>
+            <ol id="historyList"></ol>
+          </div>
+        </section>
+      </form>
+
+      <div id="toast" class="toast" role="status"></div>
+    </main>
+    <script src="shared.js"></script>
+    <script src="resumeParser.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

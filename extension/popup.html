@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>简历精准投递助手</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <h1>投递助手</h1>
+          <p id="siteStatus">读取当前页面...</p>
+        </div>
+        <button id="openOptions" class="icon-button" title="设置资料" aria-label="设置资料">⚙</button>
+      </header>
+
+      <section class="profile-status" id="profileStatus"></section>
+      <section class="automation-status" id="automationStatus"></section>
+
+      <section class="actions">
+        <button id="scanJobs" class="primary">扫描岗位</button>
+        <button id="llmScore">LLM 重评</button>
+        <button id="highlightJobs">高亮匹配</button>
+        <button id="focusTop">定位最高分</button>
+        <button id="fillPage">填充当前页</button>
+        <button id="autoApply" class="danger">自动处理本页</button>
+        <button id="applyPage" class="danger subtle">确认投递/沟通</button>
+        <button id="stopAutomation">停止自动化</button>
+      </section>
+
+      <section class="result-panel">
+        <div class="panel-title">
+          <strong>匹配结果</strong>
+          <button id="clearMarks" class="link-button">清除标记</button>
+        </div>
+        <div id="message" class="message"></div>
+        <ol id="jobList" class="job-list"></ol>
+      </section>
+    </main>
+    <script src="shared.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>
