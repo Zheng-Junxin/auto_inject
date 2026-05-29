@@ -67,6 +67,11 @@
     setValue("navigationDelayMs", automation.navigationDelayMs);
     setValue("stopOnBlocking", automation.stopOnBlocking);
     setValue("skipAlreadyApplied", automation.skipAlreadyApplied);
+    setValue("autoCollectBeforeApply", automation.autoCollectBeforeApply);
+    setValue("collectionMaxScrolls", automation.collectionMaxScrolls);
+    setValue("collectionMaxPages", automation.collectionMaxPages);
+    setValue("collectionScrollDelayMs", automation.collectionScrollDelayMs);
+    setValue("collectionClickNextPage", automation.collectionClickNextPage);
     renderHistory();
   }
 
@@ -109,7 +114,12 @@
         closeTabsAfterApply: getValue("closeTabsAfterApply"),
         navigationDelayMs: getValue("navigationDelayMs"),
         stopOnBlocking: getValue("stopOnBlocking"),
-        skipAlreadyApplied: getValue("skipAlreadyApplied")
+        skipAlreadyApplied: getValue("skipAlreadyApplied"),
+        autoCollectBeforeApply: getValue("autoCollectBeforeApply"),
+        collectionMaxScrolls: getValue("collectionMaxScrolls"),
+        collectionMaxPages: getValue("collectionMaxPages"),
+        collectionScrollDelayMs: getValue("collectionScrollDelayMs"),
+        collectionClickNextPage: getValue("collectionClickNextPage")
       }
     });
   }

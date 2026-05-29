@@ -99,9 +99,20 @@
             <input name="skipAlreadyApplied" type="checkbox">
             <span>跳过历史记录中已投递岗位</span>
           </label>
+          <label class="toggle">
+            <input name="autoCollectBeforeApply" type="checkbox">
+            <span>自动投递前先滚动采集当前搜索结果页</span>
+          </label>
+          <label class="toggle">
+            <input name="collectionClickNextPage" type="checkbox">
+            <span>采集时尝试进入下一页</span>
+          </label>
           <div class="grid two compact">
             <label>单次最多岗位<input name="maxJobsPerRun" type="number" min="1" max="30"></label>
             <label>页面等待毫秒<input name="navigationDelayMs" type="number" min="500" max="15000" step="500"></label>
+            <label>采集滚动次数<input name="collectionMaxScrolls" type="number" min="1" max="80"></label>
+            <label>采集页数<input name="collectionMaxPages" type="number" min="1" max="15"></label>
+            <label>滚动等待毫秒<input name="collectionScrollDelayMs" type="number" min="250" max="5000" step="250"></label>
           </div>
           <p class="hint">自动化不会绕过验证码、登录、滑块、安全验证或平台风控。请确认符合招聘网站规则。</p>
 

@@ -133,4 +133,36 @@ assert(localValidation.originPattern === "http://localhost/*", "Localhost permis
 const redacted = context.AutoApplyShared.redactSettings({ llm: { apiKey: "token" } });
 assert(redacted.llm.apiKey === "", "redactSettings must remove llm.apiKey");
 
+const automationSettings = context.AutoApplyShared.mergeSettings({
+  automation: {
+    autoCollectBeforeApply: true,
+    collectionMaxScrolls: 999,
+    collectionMaxPages: 999,
+    collectionScrollDelayMs: 1,
+    collectionClickNextPage: true
+  }
+});
+assert(automationSettings.automation.autoCollectBeforeApply === true, "Auto collection flag should be preserved");
+assert(automationSettings.automation.collectionClickNextPage === true, "Next-page collection flag should be preserved");
+assert(automationSettings.automation.collectionMaxScrolls === 80, "Collection scroll limit should be clamped");
+assert(automationSettings.automation.collectionMaxPages === 15, "Collection page limit should be clamped");
+assert(automationSettings.automation.collectionScrollDelayMs === 250, "Collection delay should be clamped");
+
+const backgroundSource = readExtensionFile("background.js");
+assert(backgroundSource.includes("function uniqueJobs"), "Automation queue must dedupe jobs before applying");
+assert(backgroundSource.includes("function semanticJobKey"), "Automation queue should dedupe semantic job duplicates");
+assert(backgroundSource.includes("uniqueJobs(scored)"), "Automation queue should be built from deduped scored jobs");
+assert(
+  backgroundSource.includes('tabsCreate({ url: "about:blank", active: false })'),
+  "Automation should create one reusable worker tab"
+);
+assert(
+  backgroundSource.includes("await tabsUpdate(workerTab.id, { url: job.url })"),
+  "Automation should navigate the reusable worker tab for each job"
+);
+assert(!backgroundSource.includes("tabsCreate({ url: job.url"), "Automation must not open one tab per job");
+
+const popupSource = readExtensionFile("popup.js");
+assert(popupSource.includes("force: true"), "Popup auto apply must explicitly authorize a user-triggered run");
+
 console.log("Extension verification passed.");

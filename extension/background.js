@@ -15,7 +15,9 @@
     completed: [],
     failed: [],
     startedAt: "",
-    stoppedReason: ""
+    stoppedReason: "",
+    workerTabId: null,
+    confirmedApply: false
   };
 
   function storageGet(keys) {
@@ -39,6 +41,16 @@
   function tabsRemove(tabId) {
     return new Promise((resolve) => {
       chrome.tabs.remove(tabId, () => resolve());
+    });
+  }
+
+  function tabsUpdate(tabId, updateProperties) {
+    return new Promise((resolve, reject) => {
+      chrome.tabs.update(tabId, updateProperties, (tab) => {
+        const error = chrome.runtime.lastError;
+        if (error) reject(new Error(error.message));
+        else resolve(tab);
+      });
     });
   }
 
@@ -112,7 +124,8 @@
       completed: automationState.completed.slice(-20),
       failed: automationState.failed.slice(-20),
       startedAt: automationState.startedAt,
-      stoppedReason: automationState.stoppedReason
+      stoppedReason: automationState.stoppedReason,
+      workerTabId: automationState.workerTabId || null
     };
   }
 
@@ -140,6 +153,53 @@
         llmCoverLetter: String(job.llmCoverLetter || "").slice(0, 1000)
       }))
       .filter((job) => /^https?:\/\//u.test(job.url));
+  }
+
+  function normalizeJobUrl(url) {
+    try {
+      const parsed = new URL(String(url || "").trim());
+      parsed.hash = "";
+      return parsed.toString().replace(/\/$/u, "");
+    } catch (_error) {
+      return String(url || "").trim();
+    }
+  }
+
+  function jobQueueKey(job) {
+    const normalizedUrl = normalizeJobUrl(job.url);
+    if (normalizedUrl) return normalizedUrl;
+    return [job.siteId, job.company, job.title, job.city].map((part) => String(part || "").trim()).join("|");
+  }
+
+  function semanticJobKey(job) {
+    return [job.siteId, job.company, job.title, job.city].map((part) => String(part || "").trim().toLowerCase()).join("|");
+  }
+
+  function uniqueJobs(jobs) {
+    const seen = new Set();
+    const unique = [];
+    for (const job of validateJobs(jobs)) {
+      const keys = [jobQueueKey(job), semanticJobKey(job)].filter(Boolean);
+      if (!keys.length || keys.some((key) => seen.has(key))) continue;
+      for (const key of keys) seen.add(key);
+      unique.push(job);
+    }
+    return unique;
+  }
+
+  function hasMatchingProfile(settings) {
+    const profile = settings.profile || {};
+    return [profile.resumeText, profile.skills, profile.expectedRole]
+      .some((value) => String(value || "").trim().length >= 6);
+  }
+
+  function mergeValidatedJobs(targetMap, jobs) {
+    for (const job of validateJobs(jobs)) {
+      const id = job.id || shared.makeJobId(job);
+      if (!targetMap.has(id)) {
+        targetMap.set(id, { ...job, id });
+      }
+    }
   }
 
   function chromePermissionsContains(details) {
@@ -321,6 +381,72 @@
     return { jobs: scoredJobs, usedLlm: true, message: `LLM 已评分 ${scoredJobs.length} 个岗位` };
   }
 
+  async function collectJobsFromTab(tabId, { withLlm = false, highlight = false } = {}) {
+    const settings = await getSettings();
+    const numericTabId = Number(tabId);
+    if (!Number.isInteger(numericTabId)) {
+      throw new Error("未找到可采集的标签页");
+    }
+
+    const collected = new Map();
+    const pageStats = [];
+    let stoppedReason = "";
+
+    for (let pageIndex = 0; pageIndex < settings.automation.collectionMaxPages; pageIndex += 1) {
+      const result = await sendMessageWithRetry(numericTabId, {
+        type: "COLLECT_CURRENT_PAGE",
+        highlight
+      });
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      mergeValidatedJobs(collected, result.jobs || []);
+      pageStats.push({
+        page: pageIndex + 1,
+        jobs: (result.jobs || []).length,
+        total: collected.size,
+        nextPageUrl: result.nextPageUrl || "",
+        blocked: Boolean(result.blocked && result.blocked.blocked),
+        stats: result.stats || {}
+      });
+
+      if (result.blocked && result.blocked.blocked && settings.automation.stopOnBlocking) {
+        stoppedReason = result.blocked.reason || "页面被登录、验证码或频控阻断";
+        break;
+      }
+
+      if (!settings.automation.collectionClickNextPage || !result.nextPageUrl) {
+        break;
+      }
+      if (pageIndex >= settings.automation.collectionMaxPages - 1) {
+        break;
+      }
+
+      await tabsUpdate(numericTabId, { url: result.nextPageUrl });
+      await waitForTabReady(numericTabId, 30000);
+      await wait(settings.automation.navigationDelayMs);
+    }
+
+    let jobs = Array.from(collected.values()).sort((left, right) => (right.score || 0) - (left.score || 0));
+    let usedLlm = false;
+    let llmMessage = "";
+    if (withLlm && settings.llm.enabled && jobs.length) {
+      const scored = await scoreJobsWithLlm(jobs);
+      jobs = scored.jobs;
+      usedLlm = Boolean(scored.usedLlm);
+      llmMessage = scored.message || "";
+    }
+
+    return {
+      jobs,
+      usedLlm,
+      pageStats,
+      stoppedReason,
+      message: stoppedReason || llmMessage || `已自动采集 ${jobs.length} 个岗位`
+    };
+  }
+
   async function testLlmConfig() {
     const settings = await getSettings();
     const response = await callChatCompletions(settings, [
@@ -343,36 +469,63 @@
       completed: automationState.completed || [],
       failed: automationState.failed || [],
       startedAt: automationState.startedAt || "",
-      stoppedReason
+      stoppedReason,
+      workerTabId: null,
+      confirmedApply: false
     };
   }
 
-  async function startAutomation(rawJobs) {
+  async function startAutomation(rawJobs, sourceTabId = null, options = {}) {
     if (automationState.running) {
       return { status: getAutomationSnapshot(), message: "自动化正在运行" };
     }
 
     const settings = await getSettings();
-    if (!settings.automation.enabled) {
+    const force = Boolean(options.force);
+    if (!settings.automation.enabled && !force) {
       return { status: getAutomationSnapshot(), message: "自动化未启用" };
     }
 
-    const scored = settings.llm.enabled ? (await scoreJobsWithLlm(rawJobs)).jobs : validateJobs(rawJobs);
+    if (!hasMatchingProfile(settings)) {
+      return {
+        status: getAutomationSnapshot(),
+        message: "请先在设置中上传/解析简历，或填写技能与期望岗位后再自动投递。"
+      };
+    }
+
+    let sourceJobs = uniqueJobs(rawJobs);
+    if (!sourceJobs.length && settings.automation.autoCollectBeforeApply && sourceTabId !== null) {
+      const collected = await collectJobsFromTab(sourceTabId, { withLlm: settings.llm.enabled, highlight: false });
+      sourceJobs = uniqueJobs(collected.jobs);
+    }
+
+    let scored = sourceJobs;
+    let usedLlmForQueue = settings.llm.enabled && sourceJobs.some((job) => job.llmDecision);
+    if (settings.llm.enabled && !usedLlmForQueue) {
+      const scoredResult = await scoreJobsWithLlm(sourceJobs);
+      scored = scoredResult.jobs;
+      usedLlmForQueue = Boolean(scoredResult.usedLlm);
+    }
     const todayCount = todaysApplicationCount(settings);
     const remainingDaily = settings.filters.maxDailySubmissions - todayCount;
     if (remainingDaily <= 0) {
       return { status: getAutomationSnapshot(), message: `今日已达到 ${settings.filters.maxDailySubmissions} 次上限` };
     }
 
-    const threshold = settings.llm.enabled ? settings.llm.minScore : settings.filters.minScore;
-    const queue = scored
+    const threshold = usedLlmForQueue ? settings.llm.minScore : settings.filters.minScore;
+    const queue = uniqueJobs(scored)
       .filter((job) => {
         const score = Number(job.combinedScore || job.llmScore || job.score) || 0;
         if (score < threshold) return false;
-        if (settings.llm.enabled && String(job.llmDecision || "").toLowerCase() !== "apply") return false;
+        if (usedLlmForQueue && String(job.llmDecision || "").toLowerCase() !== "apply") return false;
         if (String(job.llmDecision || "").toLowerCase() === "skip") return false;
         if (settings.automation.skipAlreadyApplied && alreadyApplied(settings, job)) return false;
         return true;
+      })
+      .sort((left, right) => {
+        const leftScore = Number(left.combinedScore || left.llmScore || left.score) || 0;
+        const rightScore = Number(right.combinedScore || right.llmScore || right.score) || 0;
+        return rightScore - leftScore;
       })
       .slice(0, Math.min(settings.automation.maxJobsPerRun, remainingDaily));
 
@@ -388,7 +541,9 @@
       completed: [],
       failed: [],
       startedAt: new Date().toISOString(),
-      stoppedReason: ""
+      stoppedReason: "",
+      workerTabId: null,
+      confirmedApply: force || settings.automation.autoClickApply
     };
 
     runAutomationQueue().catch((error) => {
@@ -402,18 +557,22 @@
 
   async function runAutomationQueue() {
     const settings = await getSettings();
-    while (automationState.running && automationState.queue.length) {
+    let workerTab = null;
+    try {
+      workerTab = await tabsCreate({ url: "about:blank", active: false });
+      automationState.workerTabId = workerTab.id;
+
+      while (automationState.running && automationState.queue.length) {
       const job = automationState.queue.shift();
       automationState.current = job;
-      let tab = null;
 
       try {
-        tab = await tabsCreate({ url: job.url, active: false });
-        await waitForTabReady(tab.id, 30000);
+        await tabsUpdate(workerTab.id, { url: job.url });
+        await waitForTabReady(workerTab.id, 30000);
         await wait(settings.automation.navigationDelayMs);
-        const result = await sendMessageWithRetry(tab.id, {
+        const result = await sendMessageWithRetry(workerTab.id, {
           type: "APPLY_CURRENT_PAGE",
-          confirmed: settings.automation.autoClickApply,
+          confirmed: automationState.confirmedApply,
           automationJob: job
         });
 
@@ -438,11 +597,13 @@
           automationState.running = false;
           automationState.stoppedReason = error.message || String(error);
         }
-      } finally {
-        if (tab && settings.automation.closeTabsAfterApply) {
-          await tabsRemove(tab.id);
-        }
       }
+    }
+    } finally {
+      if (workerTab && settings.automation.closeTabsAfterApply) {
+        await tabsRemove(workerTab.id);
+      }
+      automationState.workerTabId = null;
     }
 
     automationState.running = false;
@@ -528,8 +689,15 @@
           return await testLlmConfig();
         case "LLM_SCORE_JOBS":
           return await scoreJobsWithLlm(message.jobs || []);
+        case "START_COLLECT_JOBS":
+          return await collectJobsFromTab(message.tabId, {
+            withLlm: Boolean(message.withLlm),
+            highlight: Boolean(message.highlight)
+          });
         case "START_AUTO_APPLY":
-          return await startAutomation(message.jobs || []);
+          return await startAutomation(message.jobs || [], message.sourceTabId ?? null, {
+            force: Boolean(message.force)
+          });
         case "STOP_AUTOMATION":
           resetAutomation("stopped", "用户停止");
           return { status: getAutomationSnapshot() };

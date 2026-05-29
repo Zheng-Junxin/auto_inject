@@ -222,6 +222,178 @@
     };
   }
 
+  function mergeJobLists(targetMap, jobs) {
+    for (const job of jobs || []) {
+      const id = job.id || shared.makeJobId(job);
+      if (!targetMap.has(id)) {
+        targetMap.set(id, { ...job, id });
+      }
+    }
+  }
+
+  function findScrollableContainer() {
+    const candidates = Array.from(document.querySelectorAll("main, [class*='list'], [class*='job'], [class*='scroll'], section, div"))
+      .filter((element) => {
+        if (!isVisible(element)) return false;
+        const style = getComputedStyle(element);
+        const canScroll = /(auto|scroll)/u.test(`${style.overflowY} ${style.overflow}`);
+        return canScroll && element.scrollHeight > element.clientHeight + 120;
+      })
+      .sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight));
+
+    return candidates[0] || document.scrollingElement || document.documentElement;
+  }
+
+  function scrollContainerOnce(container) {
+    if (!container) return false;
+    const before = container === document.scrollingElement || container === document.documentElement
+      ? window.scrollY
+      : container.scrollTop;
+    const step = Math.max(360, Math.round((container.clientHeight || window.innerHeight) * 0.85));
+
+    if (container === document.scrollingElement || container === document.documentElement) {
+      window.scrollBy({ top: step, behavior: "smooth" });
+      return window.scrollY !== before || document.documentElement.scrollHeight > window.innerHeight;
+    }
+
+    container.scrollBy({ top: step, behavior: "smooth" });
+    return container.scrollTop !== before || container.scrollHeight > container.clientHeight;
+  }
+
+  function buttonText(element) {
+    return shared.normalizeText(
+      [
+        element.innerText,
+        element.textContent,
+        element.getAttribute("aria-label"),
+        element.getAttribute("title")
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+  }
+
+  function isDisabledAction(element) {
+    return (
+      element.disabled ||
+      element.getAttribute("aria-disabled") === "true" ||
+      element.classList.contains("disabled") ||
+      element.closest("[disabled], [aria-disabled='true']")
+    );
+  }
+
+  function clickLoadMoreButton() {
+    const positiveTerms = ["加载更多", "查看更多", "更多职位", "更多岗位", "展开更多", "load more", "more"];
+    const negativeTerms = ["投递", "申请", "沟通", "登录", "注册", "收藏", "筛选", "搜索"];
+    const candidates = Array.from(document.querySelectorAll("button, a, [role='button']")).filter(isVisible);
+    for (const candidate of candidates) {
+      const text = buttonText(candidate);
+      if (!text || isDisabledAction(candidate)) continue;
+      if (negativeTerms.some((term) => text.includes(shared.normalizeText(term)))) continue;
+      if (positiveTerms.some((term) => text.includes(shared.normalizeText(term)))) {
+        const lastClickedAt = Number(candidate.dataset.autoApplyClickedAt || 0);
+        if (Date.now() - lastClickedAt < 5000) continue;
+        candidate.dataset.autoApplyClickedAt = String(Date.now());
+        candidate.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function findNextPageControl() {
+    const positiveTerms = ["下一页", "下页", "next", ">", "›", "»"];
+    const negativeTerms = ["投递", "申请", "沟通", "登录", "注册", "收藏", "筛选", "搜索"];
+    const candidates = Array.from(document.querySelectorAll("a[href], button, [role='button']")).filter(isVisible);
+    for (const candidate of candidates) {
+      const text = buttonText(candidate);
+      if (!text || isDisabledAction(candidate)) continue;
+      if (negativeTerms.some((term) => text.includes(shared.normalizeText(term)))) continue;
+      const aria = shared.normalizeText(candidate.getAttribute("aria-label") || "");
+      const rel = shared.normalizeText(candidate.getAttribute("rel") || "");
+      const isNext =
+        rel === "next" ||
+        positiveTerms.some((term) => text === shared.normalizeText(term) || text.includes(shared.normalizeText(term))) ||
+        aria.includes("next") ||
+        aria.includes("下一页");
+      if (!isNext) continue;
+
+      const href = candidate.getAttribute("href");
+      return {
+        element: candidate,
+        url: href ? new URL(href, location.href).href : ""
+      };
+    }
+    return null;
+  }
+
+  async function collectCurrentPage({ highlight = false } = {}) {
+    const settings = await getSettings();
+    const automation = settings.automation;
+    const collected = new Map();
+    const stats = { scrolls: 0, loadMoreClicks: 0, inPageNextClicks: 0, pagesVisited: 1 };
+    let blocked = detectBlockingState();
+    let nextPageUrl = "";
+
+    for (let pageIndex = 0; pageIndex < automation.collectionMaxPages; pageIndex += 1) {
+      let staleRounds = 0;
+      let lastCount = collected.size;
+
+      for (let scrollIndex = 0; scrollIndex < automation.collectionMaxScrolls; scrollIndex += 1) {
+        blocked = detectBlockingState();
+        if (automation.stopOnBlocking && blocked.blocked) {
+          return { site, jobs: Array.from(collected.values()), nextPageUrl: "", blocked, stats };
+        }
+
+        const scan = await scanJobs({ highlight: false });
+        mergeJobLists(collected, scan.jobs);
+        const clickedMore = clickLoadMoreButton();
+        if (clickedMore) stats.loadMoreClicks += 1;
+
+        const container = findScrollableContainer();
+        if (scrollContainerOnce(container)) stats.scrolls += 1;
+        await wait(automation.collectionScrollDelayMs);
+
+        if (collected.size === lastCount && !clickedMore) {
+          staleRounds += 1;
+        } else {
+          staleRounds = 0;
+          lastCount = collected.size;
+        }
+        if (staleRounds >= 4) break;
+      }
+
+      if (!automation.collectionClickNextPage || pageIndex >= automation.collectionMaxPages - 1) {
+        break;
+      }
+
+      const next = findNextPageControl();
+      if (!next) break;
+      if (next.url) {
+        nextPageUrl = next.url;
+        break;
+      }
+
+      next.element.click();
+      stats.inPageNextClicks += 1;
+      stats.pagesVisited += 1;
+      await wait(Math.max(automation.navigationDelayMs, automation.collectionScrollDelayMs * 2));
+    }
+
+    const jobs = Array.from(collected.values()).sort((left, right) => (right.score || 0) - (left.score || 0));
+    lastScan = lastScan.filter((job) => collected.has(job.id));
+    if (highlight) {
+      renderHighlights(lastScan, settings.filters.minScore);
+    }
+    return {
+      site,
+      jobs,
+      nextPageUrl,
+      blocked,
+      stats
+    };
+  }
+
   function stripDomFields(job) {
     const { card, ...rest } = job;
     return rest;
@@ -343,8 +515,21 @@
   }
 
   function findActionButton() {
-    const positiveWords = ["投递", "申请", "应聘", "沟通", "发送简历", "立即沟通", "立即申请", "apply"];
-    const negativeWords = ["收藏", "分享", "举报", "订阅", "上传", "登录", "注册", "完善", "筛选", "搜索"];
+    const positiveWords = [
+      "投递",
+      "申请",
+      "应聘",
+      "沟通",
+      "聊一聊",
+      "发送简历",
+      "投递简历",
+      "立即沟通",
+      "继续沟通",
+      "立即申请",
+      "立即投递",
+      "apply"
+    ];
+    const negativeWords = ["收藏", "分享", "举报", "订阅", "上传", "登录", "注册", "完善", "筛选", "搜索", "已沟通", "已投递"];
     const candidates = Array.from(document.querySelectorAll("button, a, [role='button']")).filter(isVisible);
     let best = null;
     let bestScore = 0;
@@ -511,6 +696,8 @@
           return pageStatus();
         case "SCAN_JOBS":
           return scanJobs({ highlight: Boolean(message.highlight) });
+        case "COLLECT_CURRENT_PAGE":
+          return collectCurrentPage({ highlight: Boolean(message.highlight) });
         case "CLEAR_HIGHLIGHTS":
           clearHighlights();
           return { cleared: true };

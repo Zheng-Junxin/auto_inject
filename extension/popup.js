@@ -7,6 +7,7 @@
     autoApply: document.querySelector("#autoApply"),
     automationStatus: document.querySelector("#automationStatus"),
     clearMarks: document.querySelector("#clearMarks"),
+    collectJobs: document.querySelector("#collectJobs"),
     fillPage: document.querySelector("#fillPage"),
     focusTop: document.querySelector("#focusTop"),
     highlightJobs: document.querySelector("#highlightJobs"),
@@ -200,6 +201,29 @@
     return Boolean(response.usedLlm);
   }
 
+  async function collectJobs({ withLlm = false, highlight = false } = {}) {
+    if (!activeTab || typeof activeTab.id !== "number") {
+      setMessage("未找到当前标签页", true);
+      return [];
+    }
+    const response = await sendRuntime({
+      type: "START_COLLECT_JOBS",
+      tabId: activeTab.id,
+      withLlm,
+      highlight
+    });
+    if (response.error) {
+      setMessage(`自动采集失败：${response.error}`, true);
+      return [];
+    }
+    lastJobs = response.jobs || [];
+    renderJobs(lastJobs);
+    const pages = response.pageStats ? response.pageStats.length : 0;
+    const suffix = response.stoppedReason ? `；停止原因：${response.stoppedReason}` : "";
+    setMessage(response.message || `已采集 ${lastJobs.length} 个岗位，覆盖 ${pages} 页${suffix}`, Boolean(response.stoppedReason));
+    return lastJobs;
+  }
+
   elements.openOptions.addEventListener("click", () => {
     chrome.runtime.openOptionsPage();
   });
@@ -207,6 +231,12 @@
   elements.scanJobs.addEventListener("click", () => {
     runAction(async () => {
       await scanJobs({ highlight: false, withLlm: false });
+    });
+  });
+
+  elements.collectJobs.addEventListener("click", () => {
+    runAction(async () => {
+      await collectJobs({ withLlm: settings.llm.enabled, highlight: true });
     });
   });
 
@@ -275,12 +305,21 @@
 
   elements.autoApply.addEventListener("click", () => {
     runAction(async () => {
-      if (!lastJobs.length) {
-        await scanJobs({ highlight: false, withLlm: settings.llm.enabled });
+      if (settings.automation.autoCollectBeforeApply || !lastJobs.length) {
+        await collectJobs({ withLlm: settings.llm.enabled, highlight: false });
       } else if (settings.llm.enabled && !lastJobs.some((job) => job.llmDecision)) {
         await scoreLastJobsWithLlm();
       }
-      const response = await sendRuntime({ type: "START_AUTO_APPLY", jobs: lastJobs });
+      if (!lastJobs.length) {
+        setMessage("当前页面没有采集到可匹配的岗位，请先打开招聘搜索结果页。", true);
+        return;
+      }
+      const response = await sendRuntime({
+        type: "START_AUTO_APPLY",
+        jobs: lastJobs,
+        sourceTabId: activeTab && activeTab.id,
+        force: true
+      });
       if (response.error) {
         setMessage(`自动化启动失败：${response.error}`, true);
         return;

@@ -48,7 +48,12 @@
       closeTabsAfterApply: true,
       navigationDelayMs: 2500,
       stopOnBlocking: true,
-      skipAlreadyApplied: true
+      skipAlreadyApplied: true,
+      autoCollectBeforeApply: true,
+      collectionMaxScrolls: 18,
+      collectionMaxPages: 3,
+      collectionScrollDelayMs: 900,
+      collectionClickNextPage: true
     },
     history: {
       applications: []
@@ -167,6 +172,26 @@
     );
     base.automation.stopOnBlocking = Boolean(base.automation.stopOnBlocking);
     base.automation.skipAlreadyApplied = Boolean(base.automation.skipAlreadyApplied);
+    base.automation.autoCollectBeforeApply = Boolean(base.automation.autoCollectBeforeApply);
+    base.automation.collectionMaxScrolls = clampNumber(
+      base.automation.collectionMaxScrolls,
+      1,
+      80,
+      DEFAULT_SETTINGS.automation.collectionMaxScrolls
+    );
+    base.automation.collectionMaxPages = clampNumber(
+      base.automation.collectionMaxPages,
+      1,
+      15,
+      DEFAULT_SETTINGS.automation.collectionMaxPages
+    );
+    base.automation.collectionScrollDelayMs = clampNumber(
+      base.automation.collectionScrollDelayMs,
+      250,
+      5000,
+      DEFAULT_SETTINGS.automation.collectionScrollDelayMs
+    );
+    base.automation.collectionClickNextPage = Boolean(base.automation.collectionClickNextPage);
 
     return base;
   }
