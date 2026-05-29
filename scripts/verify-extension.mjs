@@ -140,8 +140,12 @@ const llmApplyScore = context.AutoApplyShared.effectiveApplicationScore(
 assert(llmApplyScore === 85, `LLM apply score should use the LLM score, got ${llmApplyScore}`);
 
 const automationSettings = context.AutoApplyShared.mergeSettings({
+  filters: {
+    maxDailySubmissions: 999
+  },
   automation: {
     autoCollectBeforeApply: true,
+    maxJobsPerRun: 999,
     collectionMaxScrolls: 999,
     collectionMaxPages: 999,
     collectionScrollDelayMs: 1,
@@ -153,6 +157,8 @@ assert(automationSettings.automation.collectionClickNextPage === true, "Next-pag
 assert(automationSettings.automation.collectionMaxScrolls === 80, "Collection scroll limit should be clamped");
 assert(automationSettings.automation.collectionMaxPages === 15, "Collection page limit should be clamped");
 assert(automationSettings.automation.collectionScrollDelayMs === 250, "Collection delay should be clamped");
+assert(automationSettings.filters.maxDailySubmissions === 150, "Daily submission limit should allow BOSS 150 cap");
+assert(automationSettings.automation.maxJobsPerRun === 150, "Single automation run should allow a 150-job queue");
 
 const backgroundSource = readExtensionFile("background.js");
 assert(backgroundSource.includes("function uniqueJobs"), "Automation queue must dedupe jobs before applying");
@@ -174,11 +180,26 @@ assert(
   backgroundSource.includes("message.sourceTabId ?? sender.tab?.id ?? null"),
   "Automation should infer the source tab for content-script initiated runs"
 );
+assert(
+  backgroundSource.includes("isBlockingAutomationError"),
+  "Automation should continue after non-blocking per-job failures"
+);
+assert(
+  backgroundSource.includes("const llmBatchSize = 20") &&
+    backgroundSource.includes("index += llmBatchSize"),
+  "LLM scoring should batch through all collected jobs instead of only the first page slice"
+);
 
 const contentSource = readExtensionFile("contentScript.js");
 assert(
   contentSource.includes("detectBlockingState({ actionAvailable: Boolean(actionButton) })"),
   "Apply flow should not treat optional resume prompts as hard blockers when an action button is available"
+);
+assert(
+  contentSource.includes("function scoreScrollableCandidate") &&
+    contentSource.includes("candidate.cardCount * 10000") &&
+    contentSource.includes("document.documentElement.scrollHeight > window.innerHeight + 120"),
+  "Collection should prioritize the scroll container that owns visible job cards"
 );
 
 console.log("Extension verification passed.");

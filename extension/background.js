@@ -366,14 +366,21 @@
       return { jobs, usedLlm: false, message: "未允许向 LLM 发送简历与岗位信息" };
     }
 
-    const response = await callChatCompletions(settings, buildLlmMessages(settings, jobs));
-    const content = response?.choices?.[0]?.message?.content || "";
-    const parsed = parseLlmJson(content);
-    if (!parsed) {
+    const resultMap = new Map();
+    const llmBatchSize = 20;
+    for (let index = 0; index < jobs.length; index += llmBatchSize) {
+      const batch = jobs.slice(index, index + llmBatchSize);
+      const response = await callChatCompletions(settings, buildLlmMessages(settings, batch));
+      const content = response?.choices?.[0]?.message?.content || "";
+      const parsed = parseLlmJson(content);
+      if (!parsed) {
       throw new Error("LLM 返回内容不是可解析 JSON");
     }
 
-    const resultMap = normalizeLlmResults(parsed);
+      for (const [id, result] of normalizeLlmResults(parsed)) {
+        resultMap.set(id, result);
+      }
+    }
     const scoredJobs = jobs
       .map((job) => shared.combineLlmScore(job, resultMap.get(job.id), settings))
       .sort((left, right) => (right.combinedScore || right.score) - (left.combinedScore || left.score));
@@ -587,13 +594,15 @@
           appliedAt: new Date().toISOString()
         });
       } catch (error) {
+        const blocked = isBlockingAutomationError(error);
         automationState.failed.push({
           title: job.title,
           company: job.company,
           reason: error.message || String(error),
+          blocked,
           failedAt: new Date().toISOString()
         });
-        if (settings.automation.stopOnBlocking) {
+        if (settings.automation.stopOnBlocking && blocked) {
           automationState.running = false;
           automationState.stoppedReason = error.message || String(error);
         }
@@ -611,6 +620,11 @@
     if (!AUTOMATION_DONE_STATUSES.has(automationState.status) || automationState.status === "running") {
       automationState.status = automationState.stoppedReason ? "stopped" : "completed";
     }
+  }
+
+  function isBlockingAutomationError(error) {
+    const message = String(error?.message || error || "");
+    return /验证码|安全验证|滑块|captcha|登录|频控|频繁|上限|认证|简历资料|blocked|limit/i.test(message);
   }
 
   function wait(ms) {

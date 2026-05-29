@@ -144,7 +144,7 @@
     base.filters.maxDailySubmissions = clampNumber(
       base.filters.maxDailySubmissions,
       1,
-      100,
+      150,
       DEFAULT_SETTINGS.filters.maxDailySubmissions
     );
     base.filters.actionDelayMs = clampNumber(base.filters.actionDelayMs, 250, 5000, DEFAULT_SETTINGS.filters.actionDelayMs);
@@ -160,7 +160,7 @@
     base.automation.maxJobsPerRun = clampNumber(
       base.automation.maxJobsPerRun,
       1,
-      30,
+      150,
       DEFAULT_SETTINGS.automation.maxJobsPerRun
     );
     base.automation.closeTabsAfterApply = Boolean(base.automation.closeTabsAfterApply);

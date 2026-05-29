@@ -231,17 +231,83 @@
     }
   }
 
+  function scrollableDelta(element) {
+    return Math.max(0, (element?.scrollHeight || 0) - (element?.clientHeight || 0));
+  }
+
+  function canScrollElement(element) {
+    if (!element || !isVisible(element)) return false;
+    const style = getComputedStyle(element);
+    const overflow = `${style.overflowY} ${style.overflow}`;
+    return (
+      /(auto|scroll|overlay)/u.test(overflow) ||
+      scrollableDelta(element) > 120
+    ) && scrollableDelta(element) > 80;
+  }
+
+  function addScrollableCandidate(target, element, cards) {
+    if (!canScrollElement(element)) return;
+    const current = target.get(element) || { element, cardCount: 0 };
+    current.cardCount += cards.filter((card) => element.contains(card)).length;
+    target.set(element, current);
+  }
+
+  function addScrollableAncestors(target, element, cards) {
+    for (let node = element?.parentElement; node && node !== document.body; node = node.parentElement) {
+      addScrollableCandidate(target, node, cards);
+    }
+  }
+
+  function scoreScrollableCandidate(candidate) {
+    const element = candidate.element;
+    const rect = element.getBoundingClientRect();
+    const className = String(element.className || "").toLowerCase();
+    const listHint = /job-list|joblist|search-job|list-box|job-card|job-primary|job-wrapper|position-list/u.test(className);
+    const detailHint = /detail|description|job-sec|chat|message|conversation/u.test(className);
+    let score = Math.min(scrollableDelta(element), 4000);
+
+    score += candidate.cardCount * 10000;
+    if (listHint) score += 3000;
+    if (detailHint) score -= 3000;
+
+    if (site.id === "boss") {
+      if (rect.left < window.innerWidth * 0.5) score += 2500;
+      if (rect.width < window.innerWidth * 0.55) score += 1200;
+      if (rect.left > window.innerWidth * 0.45) score -= 2500;
+      if (candidate.cardCount > 0) score += 3000;
+    }
+
+    return score;
+  }
+
   function findScrollableContainer() {
+    const cards = collectCards();
+    const cardContainers = new Map();
+    for (const card of cards) {
+      addScrollableCandidate(cardContainers, card, cards);
+      addScrollableAncestors(cardContainers, card, cards);
+    }
+
+    const preferred = Array.from(cardContainers.values())
+      .filter((candidate) => candidate.cardCount > 0)
+      .sort((left, right) => scoreScrollableCandidate(right) - scoreScrollableCandidate(left));
+
+    if (preferred.length) {
+      return preferred[0].element;
+    }
+
+    if (cards.length && document.documentElement.scrollHeight > window.innerHeight + 120) {
+      return document.scrollingElement || document.documentElement;
+    }
+
     const candidates = Array.from(document.querySelectorAll("main, [class*='list'], [class*='job'], [class*='scroll'], section, div"))
       .filter((element) => {
-        if (!isVisible(element)) return false;
-        const style = getComputedStyle(element);
-        const canScroll = /(auto|scroll)/u.test(`${style.overflowY} ${style.overflow}`);
-        return canScroll && element.scrollHeight > element.clientHeight + 120;
+        return canScrollElement(element);
       })
-      .sort((left, right) => (right.scrollHeight - right.clientHeight) - (left.scrollHeight - left.clientHeight));
+      .map((element) => ({ element, cardCount: 0 }))
+      .sort((left, right) => scoreScrollableCandidate(right) - scoreScrollableCandidate(left));
 
-    return candidates[0] || document.scrollingElement || document.documentElement;
+    return candidates[0]?.element || document.scrollingElement || document.documentElement;
   }
 
   function scrollContainerOnce(container) {
@@ -593,7 +659,7 @@
     const actionButton = findActionButton();
     const blocking = detectBlockingState({ actionAvailable: Boolean(actionButton) });
     if (settings.automation.stopOnBlocking && blocking.blocked) {
-      return { applied: false, reason: blocking.reason, job: automationJob || extractCurrentJob() };
+      return { applied: false, blocked: true, reason: blocking.reason, job: automationJob || extractCurrentJob() };
     }
 
     const job = extractCurrentJob();
@@ -607,6 +673,7 @@
     if (effectiveScore < threshold) {
       return {
         applied: false,
+        blocked: false,
         reason: `评分 ${effectiveScore} 低于阈值 ${threshold}`,
         job: stripDomFields(effectiveJob)
       };
@@ -615,6 +682,8 @@
     if (todayCount >= settings.filters.maxDailySubmissions) {
       return {
         applied: false,
+        blocked: true,
+        limitReached: true,
         reason: `今日已达到 ${settings.filters.maxDailySubmissions} 次上限`,
         job: stripDomFields(effectiveJob)
       };
@@ -623,6 +692,7 @@
     if (!actionButton) {
       return {
         applied: false,
+        blocked: false,
         reason: "未找到可识别的投递/沟通按钮",
         job: stripDomFields(effectiveJob)
       };
@@ -631,6 +701,7 @@
     if (settings.filters.requireManualConfirmation && !confirmed) {
       return {
         applied: false,
+        blocked: false,
         requiresConfirmation: true,
         actionText: compactText(actionButton.innerText || actionButton.textContent),
         job: stripDomFields(effectiveJob)
