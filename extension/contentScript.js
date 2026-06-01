@@ -443,6 +443,7 @@
       }
       if (!score) continue;
       if (preferDialog && isDialogScoped(candidate)) score += 8;
+      if (candidate.matches("button, a, [role='button']")) score += 4;
       if (candidate.tagName === "BUTTON") score += 1;
       if (text.length <= 8) score += 1;
       if (score > bestScore) {
@@ -453,17 +454,34 @@
     return best;
   }
 
+  function resolveClickableElement(element) {
+    if (!element) return null;
+    if (element.matches("button, a, [role='button']")) {
+      return element;
+    }
+    const nested = Array.from(element.querySelectorAll("button, a, [role='button']")).find((candidate) => {
+      const text = buttonText(candidate);
+      return isVisible(candidate) && !isDisabledAction(candidate) && text && buttonText(element).includes(text);
+    });
+    return nested || element;
+  }
+
   function clickElement(element) {
-    if (!element) return false;
-    element.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
-    element.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
-    element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
-    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
-    element.click();
+    const target = resolveClickableElement(element);
+    if (!target) return false;
+    target.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    target.focus?.();
+    target.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
+    target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+    target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+    target.click();
     return true;
   }
 
   function detectApplicationSuccess() {
+    if (site.id === "boss" && /\/web\/geek\/chat/u.test(location.pathname)) {
+      return { success: true, reason: "BOSS chat page opened" };
+    }
     const text = document.body ? document.body.innerText.slice(0, 16000) : "";
     if (containsAnyNormalized(text, SUCCESS_TERMS)) {
       return { success: true, reason: "application already completed or confirmed" };

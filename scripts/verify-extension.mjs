@@ -165,11 +165,12 @@ assert(backgroundSource.includes("function uniqueJobs"), "Automation queue must 
 assert(backgroundSource.includes("function semanticJobKey"), "Automation queue should dedupe semantic job duplicates");
 assert(backgroundSource.includes("uniqueJobs(scored)"), "Automation queue should be built from deduped scored jobs");
 assert(
-  backgroundSource.includes('tabsCreate({ url: "about:blank", active: false })'),
+  backgroundSource.includes('tabsCreate({ url: "about:blank", active: Boolean('),
   "Automation should create one reusable worker tab"
 );
 assert(
-  backgroundSource.includes("await tabsUpdate(workerTab.id, { url: job.url })"),
+  backgroundSource.includes("function applyJobInWorker") &&
+    backgroundSource.includes("applyTabUpdateProperties(job.url, settings)"),
   "Automation should navigate the reusable worker tab for each job"
 );
 assert(!backgroundSource.includes("tabsCreate({ url: job.url"), "Automation must not open one tab per job");
@@ -195,6 +196,24 @@ assert(
     backgroundSource.includes("function runAgentAutomation"),
   "Popup auto apply should start a background agent that can search and page through BOSS jobs"
 );
+assert(
+  backgroundSource.includes("function isUsefulAgentQuery") &&
+    backgroundSource.includes("\\u4e92\\u8054\\u7f51\\u884c\\u4e1a") &&
+    backgroundSource.indexOf("...includeTerms") < backgroundSource.indexOf("...roleTerms"),
+  "Agent search should prioritize concrete skills and skip broad industry/profile terms"
+);
+assert(
+  backgroundSource.includes("function mergeApplicationHistory") &&
+    backgroundSource.includes("entry.url || entry.id") &&
+    backgroundSource.includes("preserveHistory: false"),
+  "Settings saves should not overwrite application history, while clear history must still work"
+);
+assert(
+  backgroundSource.includes("focusApplyTab") &&
+    backgroundSource.includes("function verifyPostApplyResult") &&
+    backgroundSource.includes("BOSS chat page opened after navigation"),
+  "Application worker tabs should run in the foreground and re-check BOSS chat navigation after clicks"
+);
 
 const contentSource = readExtensionFile("contentScript.js");
 assert(
@@ -212,6 +231,15 @@ assert(
     contentSource.includes("findFollowupActionButton") &&
     contentSource.includes("detectApplicationSuccess"),
   "Apply flow should handle post-click confirmations and success states"
+);
+assert(
+  contentSource.includes("function resolveClickableElement") &&
+    contentSource.includes("target.focus?.()"),
+  "Apply flow should click the real nested button/link instead of a styled wrapper"
+);
+assert(
+  contentSource.includes("/\\/web\\/geek\\/chat"),
+  "BOSS chat navigation should be treated as a successful communication state"
 );
 assert(
   contentSource.includes("await new Promise((resolve) =>") &&

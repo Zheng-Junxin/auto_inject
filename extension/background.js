@@ -66,6 +66,13 @@
     });
   }
 
+  function applyTabUpdateProperties(url, settings) {
+    return {
+      url,
+      active: Boolean(settings.automation.focusApplyTab)
+    };
+  }
+
   function sendTabMessage(tabId, message) {
     return new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -81,8 +88,34 @@
     return shared.mergeSettings(stored[SETTINGS_KEY]);
   }
 
-  async function saveSettings(nextSettings) {
+  function mergeApplicationHistory(...lists) {
+    const byKey = new Map();
+    for (const entry of lists.flat()) {
+      if (!entry || typeof entry !== "object") continue;
+      const key = entry.url || entry.id || `${entry.siteId || ""}|${entry.company || ""}|${entry.title || ""}|${entry.createdAt || ""}`;
+      if (!key) continue;
+      const existing = byKey.get(key);
+      const existingTime = existing?.createdAt ? Date.parse(existing.createdAt) || 0 : 0;
+      const entryTime = entry.createdAt ? Date.parse(entry.createdAt) || 0 : 0;
+      if (!existing || entryTime >= existingTime || (entry.status === "applied" && existing.status !== "applied")) {
+        byKey.set(key, entry);
+      }
+    }
+    return Array.from(byKey.values())
+      .sort((left, right) => (Date.parse(right.createdAt || "") || 0) - (Date.parse(left.createdAt || "") || 0))
+      .slice(0, 500);
+  }
+
+  async function saveSettings(nextSettings, { preserveHistory = true } = {}) {
     const merged = shared.mergeSettings(nextSettings);
+    if (preserveHistory) {
+      const stored = await storageGet(SETTINGS_KEY);
+      const current = shared.mergeSettings(stored[SETTINGS_KEY]);
+      merged.history.applications = mergeApplicationHistory(
+        merged.history.applications || [],
+        current.history.applications || []
+      );
+    }
     await storageSet({ [SETTINGS_KEY]: merged });
     return merged;
   }
@@ -622,14 +655,7 @@
       automationState.current = job;
 
       try {
-        await tabsUpdate(workerTabId, { url: job.url });
-        await waitForTabReady(workerTabId, 30000);
-        await wait(settings.automation.navigationDelayMs);
-        const result = await sendMessageWithRetry(workerTabId, {
-          type: "APPLY_CURRENT_PAGE",
-          confirmed: automationState.confirmedApply,
-          automationJob: job
-        });
+        const result = await applyJobInWorker(workerTabId, job, settings);
 
         if (result.alreadyApplied) {
           automationState.completed.push({
@@ -670,6 +696,44 @@
     }
   }
 
+  async function applyJobInWorker(workerTabId, job, settings) {
+    await tabsUpdate(workerTabId, applyTabUpdateProperties(job.url, settings));
+    await waitForTabReady(workerTabId, 30000);
+    await wait(settings.automation.navigationDelayMs);
+
+    try {
+      const result = await sendMessageWithRetry(workerTabId, {
+        type: "APPLY_CURRENT_PAGE",
+        confirmed: automationState.confirmedApply,
+        automationJob: job
+      });
+      return verifyPostApplyResult(workerTabId, result);
+    } catch (error) {
+      const recovered = await recoverPostApplyNavigation(workerTabId);
+      if (recovered) {
+        return recovered;
+      }
+      throw error;
+    }
+  }
+
+  async function recoverPostApplyNavigation(workerTabId) {
+    await wait(1200);
+    const pageStatus = await getPageStatusFromTab(workerTabId);
+    if (/\/web\/geek\/chat/u.test(pageStatus?.url || "")) {
+      return { applied: true, verified: true, reason: "BOSS chat page opened after navigation" };
+    }
+    return null;
+  }
+
+  async function verifyPostApplyResult(workerTabId, result) {
+    if (!result || !result.applied || result.verified) {
+      return result;
+    }
+    const recovered = await recoverPostApplyNavigation(workerTabId);
+    return recovered ? { ...result, ...recovered } : result;
+  }
+
   async function getPageStatusFromTab(tabId) {
     try {
       return await sendMessageWithRetry(tabId, { type: "GET_PAGE_STATUS" });
@@ -700,15 +764,21 @@
       }
     })();
     const excluded = new Set(shared.splitTerms(filters.excludeKeywords).map(shared.normalizeText));
+    const roleTerms = shared.splitTerms(profile.expectedRole).filter(isUsefulAgentQuery);
+    const includeTerms = shared.splitTerms(filters.includeKeywords).filter(isUsefulAgentQuery);
+    const skillTerms = shared.splitTerms(profile.skills).filter(isUsefulAgentQuery);
+    const resumeTerms = shared.extractResumeSignals(profile.resumeText).filter(isUsefulAgentQuery);
     const candidates = [
       currentQuery,
-      profile.expectedRole,
-      ...shared.splitTerms(filters.includeKeywords),
-      ...shared.splitTerms(profile.skills),
-      ...shared.extractResumeSignals(profile.resumeText),
+      ...includeTerms,
+      ...roleTerms,
+      ...skillTerms,
+      ...resumeTerms,
       "AI",
+      "LLM",
       "Python",
       "Java",
+      "JavaScript",
       "React",
       "C++",
       "Vue",
@@ -722,6 +792,7 @@
       const query = String(value || "").trim();
       const key = shared.normalizeText(query);
       if (!key || seen.has(key) || excluded.has(key)) continue;
+      if (!isUsefulAgentQuery(query)) continue;
       if (query.length < 2 || query.length > 40) continue;
       if (/https?:|www\.|@|\d{6,}/iu.test(query)) continue;
       seen.add(key);
@@ -729,6 +800,29 @@
       if (queries.length >= settings.automation.agentMaxQueries) break;
     }
     return queries.length ? queries : ["Python", "Java", "AI"];
+  }
+
+  function isUsefulAgentQuery(value) {
+    const query = String(value || "").trim();
+    const key = shared.normalizeText(query);
+    if (!key || query.length < 2 || query.length > 40) return false;
+    if (/https?:|www\.|@|github|profile|\.(?:com|cn|io)\b|\d{6,}/iu.test(query)) return false;
+    if (/[\u884c\u4e1a\u6c42\u804c\u62db\u8058\u7b80\u5386\u516c\u53f8]/u.test(query) && query.length <= 8) return false;
+    const broadTerms = new Set([
+      "it",
+      "hr",
+      "ui",
+      "pc",
+      "\u4e92\u8054\u7f51",
+      "\u4e92\u8054\u7f51\u884c\u4e1a",
+      "\u8ba1\u7b97\u673a",
+      "\u8f6f\u4ef6",
+      "\u6280\u672f",
+      "\u5de5\u7a0b",
+      "\u79d1\u6280",
+      "\u884c\u4e1a"
+    ]);
+    return !broadTerms.has(key);
   }
 
   function buildBossSearchUrl(currentUrl, query, page) {
@@ -837,7 +931,8 @@
   async function runAgentAutomation(sourceTabId, plan) {
     let workerTab = null;
     try {
-      workerTab = await tabsCreate({ url: "about:blank", active: false });
+      const initialSettings = await getSettings();
+      workerTab = await tabsCreate({ url: "about:blank", active: Boolean(initialSettings.automation.focusApplyTab) });
       automationState.workerTabId = workerTab.id;
 
       for (let index = 0; automationState.running && index < plan.length; index += 1) {
@@ -912,7 +1007,7 @@
     const settings = await getSettings();
     let workerTab = null;
     try {
-      workerTab = await tabsCreate({ url: "about:blank", active: false });
+      workerTab = await tabsCreate({ url: "about:blank", active: Boolean(settings.automation.focusApplyTab) });
       automationState.workerTabId = workerTab.id;
 
       while (automationState.running && automationState.queue.length) {
@@ -920,14 +1015,7 @@
       automationState.current = job;
 
       try {
-        await tabsUpdate(workerTab.id, { url: job.url });
-        await waitForTabReady(workerTab.id, 30000);
-        await wait(settings.automation.navigationDelayMs);
-        const result = await sendMessageWithRetry(workerTab.id, {
-          type: "APPLY_CURRENT_PAGE",
-          confirmed: automationState.confirmedApply,
-          automationJob: job
-        });
+        const result = await applyJobInWorker(workerTab.id, job, settings);
 
         if (!result.applied) {
           throw new Error(result.reason || (result.requiresConfirmation ? "需要人工确认" : "未完成投递"));
@@ -1045,7 +1133,7 @@
         case "CLEAR_HISTORY": {
           const settings = await getSettings();
           settings.history.applications = [];
-          await saveSettings(settings);
+          await saveSettings(settings, { preserveHistory: false });
           return { applications: [] };
         }
         case "TEST_LLM_CONFIG":

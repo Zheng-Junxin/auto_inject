@@ -56,7 +56,8 @@
       collectionClickNextPage: true,
       agentMaxQueries: 8,
       agentMaxPagesPerQuery: 6,
-      agentStartPage: 1
+      agentStartPage: 1,
+      focusApplyTab: true
     },
     history: {
       applications: []
@@ -213,6 +214,7 @@
       20,
       DEFAULT_SETTINGS.automation.agentStartPage
     );
+    base.automation.focusApplyTab = Boolean(base.automation.focusApplyTab);
 
     return base;
   }
