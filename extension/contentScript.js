@@ -348,6 +348,165 @@
     );
   }
 
+  const PRIMARY_ACTION_TERMS = [
+    "apply",
+    "\u7533\u8bf7",
+    "\u6295\u9012",
+    "\u6295\u9012\u7b80\u5386",
+    "\u7acb\u5373\u6295\u9012",
+    "\u7acb\u5373\u7533\u8bf7",
+    "\u6c9f\u901a",
+    "\u7acb\u5373\u6c9f\u901a",
+    "\u6253\u62db\u547c"
+  ];
+
+  const FOLLOWUP_ACTION_TERMS = [
+    "send",
+    "ok",
+    "confirm",
+    "\u53d1\u9001",
+    "\u786e\u5b9a",
+    "\u786e\u8ba4",
+    "\u786e\u8ba4\u6295\u9012",
+    "\u7acb\u5373\u6295\u9012",
+    "\u7ee7\u7eed\u6295\u9012",
+    "\u7acb\u5373\u6c9f\u901a",
+    "\u5f00\u59cb\u6c9f\u901a",
+    "\u53d1\u8d77\u6c9f\u901a",
+    "\u6253\u62db\u547c",
+    "\u540c\u610f",
+    "\u6211\u77e5\u9053\u4e86"
+  ];
+
+  const NEGATIVE_ACTION_TERMS = [
+    "\u53d6\u6d88",
+    "\u5173\u95ed",
+    "\u7a0d\u540e",
+    "\u6682\u4e0d",
+    "\u8fd4\u56de",
+    "\u6536\u85cf",
+    "\u5206\u4eab",
+    "\u4e3e\u62a5",
+    "\u7b5b\u9009",
+    "\u641c\u7d22",
+    "\u4e0a\u4f20",
+    "\u767b\u5f55",
+    "\u6ce8\u518c",
+    "\u5b8c\u5584",
+    "\u5df2\u6c9f\u901a",
+    "\u7ee7\u7eed\u6c9f\u901a",
+    "\u5df2\u6295\u9012",
+    "\u5df2\u7533\u8bf7"
+  ];
+
+  const SUCCESS_TERMS = [
+    "\u5df2\u6c9f\u901a",
+    "\u7ee7\u7eed\u6c9f\u901a",
+    "\u6c9f\u901a\u4e2d",
+    "\u5df2\u6295\u9012",
+    "\u6295\u9012\u6210\u529f",
+    "\u7b80\u5386\u5df2\u6295\u9012",
+    "\u7b80\u5386\u5df2\u53d1\u9001",
+    "\u5df2\u53d1\u9001",
+    "\u53d1\u9001\u6210\u529f",
+    "\u5df2\u7533\u8bf7",
+    "\u7533\u8bf7\u6210\u529f",
+    "\u6253\u62db\u547c\u6210\u529f"
+  ];
+
+  function containsAnyNormalized(text, terms) {
+    const normalized = shared.normalizeText(text);
+    return terms.some((term) => normalized.includes(shared.normalizeText(term)));
+  }
+
+  function visibleButtonCandidates() {
+    return Array.from(new Set(Array.from(document.querySelectorAll("button, a, [role='button'], [class*='btn'], [class*='button']"))))
+      .filter((candidate) => isVisible(candidate) && !isDisabledAction(candidate));
+  }
+
+  function isDialogScoped(element) {
+    return Boolean(element.closest("[role='dialog'], [aria-modal='true'], [class*='modal'], [class*='dialog'], [class*='popover'], [class*='popup']"));
+  }
+
+  function findButtonByTerms(positiveTerms, negativeTerms = [], { preferDialog = false } = {}) {
+    let best = null;
+    let bestScore = 0;
+    for (const candidate of visibleButtonCandidates()) {
+      const text = buttonText(candidate);
+      if (!text || containsAnyNormalized(text, negativeTerms)) continue;
+      let score = 0;
+      for (const term of positiveTerms) {
+        const normalized = shared.normalizeText(term);
+        if (normalized && text.includes(normalized)) {
+          score += normalized.length >= 3 ? 5 : 3;
+        }
+      }
+      if (!score) continue;
+      if (preferDialog && isDialogScoped(candidate)) score += 8;
+      if (candidate.tagName === "BUTTON") score += 1;
+      if (text.length <= 8) score += 1;
+      if (score > bestScore) {
+        best = candidate;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+
+  function clickElement(element) {
+    if (!element) return false;
+    element.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    element.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, cancelable: true, view: window }));
+    element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+    element.click();
+    return true;
+  }
+
+  function detectApplicationSuccess() {
+    const text = document.body ? document.body.innerText.slice(0, 16000) : "";
+    if (containsAnyNormalized(text, SUCCESS_TERMS)) {
+      return { success: true, reason: "application already completed or confirmed" };
+    }
+    return { success: false, reason: "" };
+  }
+
+  function findFollowupActionButton() {
+    return findButtonByTerms(FOLLOWUP_ACTION_TERMS, NEGATIVE_ACTION_TERMS, { preferDialog: true });
+  }
+
+  async function finishApplicationFlow({ settings, effectiveJob, primaryActionText }) {
+    const actions = primaryActionText ? [primaryActionText] : [];
+    for (let round = 0; round < 5; round += 1) {
+      await wait(settings.filters.actionDelayMs);
+      await fillCurrentPage({ automationJob: effectiveJob });
+
+      const success = detectApplicationSuccess();
+      if (success.success) {
+        return { applied: true, verified: true, actions, reason: success.reason };
+      }
+
+      const blocking = detectBlockingState({ actionAvailable: true });
+      if (settings.automation.stopOnBlocking && blocking.blocked) {
+        return { applied: false, blocked: true, actions, reason: blocking.reason };
+      }
+
+      const followup = findFollowupActionButton();
+      if (!followup) {
+        continue;
+      }
+      const actionText = compactText(followup.innerText || followup.textContent || followup.getAttribute("aria-label"));
+      actions.push(actionText);
+      clickElement(followup);
+    }
+
+    const success = detectApplicationSuccess();
+    if (success.success) {
+      return { applied: true, verified: true, actions, reason: success.reason };
+    }
+    return { applied: true, verified: false, actions, reason: "primary action clicked; no blocking state detected" };
+  }
+
   function clickLoadMoreButton() {
     const positiveTerms = ["加载更多", "查看更多", "更多职位", "更多岗位", "展开更多", "load more", "more"];
     const negativeTerms = ["投递", "申请", "沟通", "登录", "注册", "收藏", "筛选", "搜索"];
@@ -585,6 +744,14 @@
   }
 
   function findActionButton() {
+    if (detectApplicationSuccess().success) {
+      return null;
+    }
+    const robustMatch = findButtonByTerms(PRIMARY_ACTION_TERMS, NEGATIVE_ACTION_TERMS);
+    if (robustMatch) {
+      return robustMatch;
+    }
+
     const positiveWords = [
       "投递",
       "申请",
@@ -625,6 +792,23 @@
 
   function detectBlockingState({ actionAvailable = false } = {}) {
     const text = shared.normalizeText(document.body.innerText.slice(0, 12000));
+    const hardBlockTerms = [
+      "captcha",
+      "\u9a8c\u8bc1\u7801",
+      "\u5b89\u5168\u9a8c\u8bc1",
+      "\u6ed1\u5757",
+      "\u8bf7\u767b\u5f55",
+      "\u767b\u5f55\u540e",
+      "\u64cd\u4f5c\u9891\u7e41",
+      "\u8bbf\u95ee\u5f02\u5e38",
+      "\u4eca\u65e5\u5df2\u8fbe",
+      "\u8fbe\u5230\u4e0a\u9650",
+      "\u4eca\u65e5\u6c9f\u901a\u5df2\u8fbe",
+      "\u8bf7\u5b8c\u6210\u8ba4\u8bc1"
+    ];
+    if (containsAnyNormalized(text, hardBlockTerms)) {
+      return { blocked: true, reason: "manual verification, login, rate limit, or daily limit required" };
+    }
     const rules = [
       { terms: ["验证码", "安全验证", "滑块", "captcha", "人机验证"], reason: "检测到验证码或安全验证" },
       { terms: ["请先登录", "登录后", "未登录", "手机号登录"], reason: "检测到登录要求" },
@@ -689,6 +873,17 @@
       };
     }
 
+    const alreadyCompleted = detectApplicationSuccess();
+    if (alreadyCompleted.success) {
+      return {
+        applied: false,
+        blocked: false,
+        alreadyApplied: true,
+        reason: alreadyCompleted.reason,
+        job: stripDomFields(effectiveJob)
+      };
+    }
+
     if (!actionButton) {
       return {
         applied: false,
@@ -710,30 +905,44 @@
 
     const fillResult = await fillCurrentPage({ automationJob: effectiveJob });
     await wait(settings.filters.actionDelayMs);
-    actionButton.click();
-    await wait(settings.filters.actionDelayMs);
-    await fillCurrentPage({ automationJob: effectiveJob });
+    const primaryActionText = compactText(actionButton.innerText || actionButton.textContent || actionButton.getAttribute("aria-label"));
+    clickElement(actionButton);
+    const flow = await finishApplicationFlow({ settings, effectiveJob, primaryActionText });
 
-    chrome.runtime.sendMessage({
-      type: "LOG_APPLICATION",
-      entry: {
-        id: effectiveJob.id,
-        siteId: effectiveJob.siteId,
-        siteName: effectiveJob.siteName,
-        title: effectiveJob.title,
-        company: effectiveJob.company,
-        url: effectiveJob.url,
-        score: effectiveJob.score,
-        llmScore: effectiveJob.llmScore,
-        combinedScore: effectiveScore,
-        status: "clicked"
-      }
+    if (!flow.applied) {
+      return {
+        applied: false,
+        blocked: Boolean(flow.blocked),
+        reason: flow.reason || "application action was not completed",
+        actions: flow.actions || [],
+        job: stripDomFields(effectiveJob)
+      };
+    }
+
+    await new Promise((resolve) => {
+      chrome.runtime.sendMessage({
+        type: "LOG_APPLICATION",
+        entry: {
+          id: effectiveJob.id,
+          siteId: effectiveJob.siteId,
+          siteName: effectiveJob.siteName,
+          title: effectiveJob.title,
+          company: effectiveJob.company,
+          url: effectiveJob.url,
+          score: effectiveJob.score,
+          llmScore: effectiveJob.llmScore,
+          combinedScore: effectiveScore,
+          status: flow.verified ? "applied" : "clicked"
+        }
+      }, () => resolve());
     });
 
     return {
       applied: true,
+      verified: Boolean(flow.verified),
       filled: fillResult.filled,
-      actionText: compactText(actionButton.innerText || actionButton.textContent),
+      actionText: primaryActionText,
+      actions: flow.actions || [],
       job: stripDomFields(effectiveJob)
     };
   }

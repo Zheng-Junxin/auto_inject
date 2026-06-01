@@ -189,6 +189,12 @@ assert(
     backgroundSource.includes("index += llmBatchSize"),
   "LLM scoring should batch through all collected jobs instead of only the first page slice"
 );
+assert(
+  backgroundSource.includes("START_AGENT_AUTO_APPLY") &&
+    backgroundSource.includes("function buildBossAgentPlan") &&
+    backgroundSource.includes("function runAgentAutomation"),
+  "Popup auto apply should start a background agent that can search and page through BOSS jobs"
+);
 
 const contentSource = readExtensionFile("contentScript.js");
 assert(
@@ -200,6 +206,21 @@ assert(
     contentSource.includes("candidate.cardCount * 10000") &&
     contentSource.includes("document.documentElement.scrollHeight > window.innerHeight + 120"),
   "Collection should prioritize the scroll container that owns visible job cards"
+);
+assert(
+  contentSource.includes("function finishApplicationFlow") &&
+    contentSource.includes("findFollowupActionButton") &&
+    contentSource.includes("detectApplicationSuccess"),
+  "Apply flow should handle post-click confirmations and success states"
+);
+assert(
+  contentSource.includes("await new Promise((resolve) =>") &&
+    contentSource.includes('type: "LOG_APPLICATION"'),
+  "Apply flow should wait for local application history to be written"
+);
+assert(
+  popupSource.includes("START_AGENT_AUTO_APPLY"),
+  "Popup auto apply button should launch the background agent"
 );
 
 console.log("Extension verification passed.");

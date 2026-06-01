@@ -53,7 +53,10 @@
       collectionMaxScrolls: 18,
       collectionMaxPages: 3,
       collectionScrollDelayMs: 900,
-      collectionClickNextPage: true
+      collectionClickNextPage: true,
+      agentMaxQueries: 8,
+      agentMaxPagesPerQuery: 6,
+      agentStartPage: 1
     },
     history: {
       applications: []
@@ -192,6 +195,24 @@
       DEFAULT_SETTINGS.automation.collectionScrollDelayMs
     );
     base.automation.collectionClickNextPage = Boolean(base.automation.collectionClickNextPage);
+    base.automation.agentMaxQueries = clampNumber(
+      base.automation.agentMaxQueries,
+      1,
+      20,
+      DEFAULT_SETTINGS.automation.agentMaxQueries
+    );
+    base.automation.agentMaxPagesPerQuery = clampNumber(
+      base.automation.agentMaxPagesPerQuery,
+      1,
+      20,
+      DEFAULT_SETTINGS.automation.agentMaxPagesPerQuery
+    );
+    base.automation.agentStartPage = clampNumber(
+      base.automation.agentStartPage,
+      1,
+      20,
+      DEFAULT_SETTINGS.automation.agentStartPage
+    );
 
     return base;
   }

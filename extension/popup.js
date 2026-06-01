@@ -305,6 +305,21 @@
 
   elements.autoApply.addEventListener("click", () => {
     runAction(async () => {
+      if (activeTab && typeof activeTab.id === "number") {
+        const response = await sendRuntime({
+          type: "START_AGENT_AUTO_APPLY",
+          sourceTabId: activeTab.id,
+          sourceUrl: activeTab.url || "",
+          force: true
+        });
+        if (response.error) {
+          setMessage(`Agent auto apply failed: ${response.error}`, true);
+          return;
+        }
+        renderAutomationStatus(response.status);
+        setMessage(response.message || "Agent auto apply started.");
+        return;
+      }
       if (settings.automation.autoCollectBeforeApply || !lastJobs.length) {
         await collectJobs({ withLlm: settings.llm.enabled, highlight: false });
       } else if (settings.llm.enabled && !lastJobs.some((job) => job.llmDecision)) {
