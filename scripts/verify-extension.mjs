@@ -232,10 +232,18 @@ assert(
     backgroundSource.includes("queries: plan.queries.slice(0, 20)"),
   "LLM search keyword generation should fall back to rule-based queries and expose query source"
 );
+assert(
+  backgroundSource.includes("async function generateMatchRulesWithLlm") &&
+    backgroundSource.includes("function buildMatchRuleMessages") &&
+    backgroundSource.includes("function normalizeGeneratedMatchRules") &&
+    backgroundSource.includes('case "GENERATE_MATCH_RULES"'),
+  "Options should be able to generate matching rules through the background LLM service"
+);
 const optionsHtml = readExtensionFile("options.html");
 const optionsSource = readExtensionFile("options.js");
 assert(optionsHtml.includes('name="fillDailyLimit"') && optionsSource.includes('getValue("fillDailyLimit")'), "Options page should expose the fill daily limit setting");
 assert(optionsHtml.includes('name="llmOrganizeSearchKeywords"') && optionsSource.includes('getValue("llmOrganizeSearchKeywords")'), "Options page should expose the LLM search keyword setting");
+assert(optionsHtml.includes('id="generateMatchRules"') && optionsSource.includes('type: "GENERATE_MATCH_RULES"'), "Options page should expose an LLM generate button for match rules");
 assert(
   backgroundSource.includes("function isUsefulAgentQuery") &&
     backgroundSource.includes("\\u4e92\\u8054\\u7f51\\u884c\\u4e1a") &&

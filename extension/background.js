@@ -525,6 +525,95 @@
     };
   }
 
+  function normalizeRuleTerms(value, maxItems = 30) {
+    const rawItems = Array.isArray(value)
+      ? value
+      : shared.splitTerms(value);
+    const terms = [];
+    const seen = new Set();
+    for (const item of rawItems) {
+      const term = String(item?.query || item?.keyword || item?.term || item || "").trim();
+      const key = shared.normalizeText(term);
+      if (!key || seen.has(key)) continue;
+      if (term.length > 40 || /https?:|www\.|@|\d{6,}/iu.test(term)) continue;
+      seen.add(key);
+      terms.push(term);
+      if (terms.length >= maxItems) break;
+    }
+    return terms.join(", ");
+  }
+
+  function buildMatchRuleMessages(settings) {
+    const profile = settings.profile || {};
+    const filters = settings.filters || {};
+    return [
+      {
+        role: "system",
+        content:
+          "You are a recruiting matching-rule strategist. Return only JSON. Generate practical matching rules for an auto-apply browser extension. Avoid personally identifying data, URLs, company names, and overly broad words."
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          {
+            task:
+              "Return {\"includeKeywords\":[],\"excludeKeywords\":[],\"preferredCities\":[],\"minScore\":number,\"reason\":\"\"}. includeKeywords should contain target roles, core skills, frameworks, domains and seniority signals. excludeKeywords should contain unsuitable job types or red flags. preferredCities should be city names only. minScore should be 60-90.",
+            currentRules: {
+              includeKeywords: filters.includeKeywords,
+              excludeKeywords: filters.excludeKeywords,
+              preferredCities: filters.preferredCities,
+              minScore: filters.minScore
+            },
+            candidate: {
+              expectedRole: profile.expectedRole,
+              expectedCity: profile.expectedCity,
+              expectedSalary: profile.expectedSalary,
+              skills: profile.skills,
+              resumeSignals: shared.extractResumeSignals(profile.resumeText).slice(0, 40),
+              resume: String(profile.resumeText || "").slice(0, 5000)
+            }
+          },
+          null,
+          2
+        )
+      }
+    ];
+  }
+
+  function normalizeGeneratedMatchRules(payload, settings) {
+    const source = payload?.rules || payload?.filters || payload || {};
+    const current = settings.filters || {};
+    const minScore = Number(source.minScore ?? source.minimumScore ?? current.minScore);
+    return {
+      includeKeywords: normalizeRuleTerms(source.includeKeywords || source.includes || source.keywords || current.includeKeywords, 36),
+      excludeKeywords: normalizeRuleTerms(source.excludeKeywords || source.excludes || current.excludeKeywords, 30),
+      preferredCities: normalizeRuleTerms(source.preferredCities || source.cities || current.preferredCities, 12),
+      minScore: Math.max(0, Math.min(100, Number.isFinite(minScore) ? minScore : current.minScore)),
+      reason: String(source.reason || source.explanation || "").slice(0, 240)
+    };
+  }
+
+  async function generateMatchRulesWithLlm() {
+    const settings = await getSettings();
+    if (!settings.llm.enabled) {
+      throw new Error("LLM is not enabled");
+    }
+    if (!settings.llm.allowSendingResumeToLlm) {
+      throw new Error("Enable resume sharing with LLM before generating match rules");
+    }
+    const response = await callChatCompletions(settings, buildMatchRuleMessages(settings));
+    const content = response?.choices?.[0]?.message?.content || "";
+    const parsed = parseLlmJson(content);
+    if (!parsed) {
+      throw new Error("LLM returned non-JSON match rules");
+    }
+    const rules = normalizeGeneratedMatchRules(parsed, settings);
+    return {
+      rules,
+      message: rules.reason || "Match rules generated"
+    };
+  }
+
   function resetAutomation(status = "idle", stoppedReason = "") {
     automationState = {
       running: false,
@@ -1285,6 +1374,8 @@
         }
         case "TEST_LLM_CONFIG":
           return await testLlmConfig();
+        case "GENERATE_MATCH_RULES":
+          return await generateMatchRulesWithLlm();
         case "LLM_SCORE_JOBS":
           return await scoreJobsWithLlm(message.jobs || []);
         case "START_COLLECT_JOBS":

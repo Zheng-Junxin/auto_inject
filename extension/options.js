@@ -8,6 +8,7 @@
   const parseResumeButton = document.querySelector("#parseResume");
   const resumeFileInput = document.querySelector("#resumeFile");
   const testLlmButton = document.querySelector("#testLlm");
+  const generateMatchRulesButton = document.querySelector("#generateMatchRules");
   const clearHistoryButton = document.querySelector("#clearHistory");
   const historyList = document.querySelector("#historyList");
   const toast = document.querySelector("#toast");
@@ -233,6 +234,31 @@
       showToast(`LLM 连接成功：${response.message || response.model || "OK"}`);
     } catch (error) {
       showToast(error.message || String(error));
+    }
+  });
+
+  generateMatchRulesButton.addEventListener("click", async () => {
+    try {
+      generateMatchRulesButton.disabled = true;
+      settings = collectForm();
+      await ensureLlmOriginPermission(settings);
+      await sendRuntime({ type: "SAVE_SETTINGS", settings });
+      const response = await sendRuntime({ type: "GENERATE_MATCH_RULES" });
+      if (response && response.error) {
+        throw new Error(response.error);
+      }
+      const rules = response.rules || {};
+      setValue("includeKeywords", rules.includeKeywords);
+      setValue("excludeKeywords", rules.excludeKeywords);
+      setValue("preferredCities", rules.preferredCities);
+      setValue("minScore", rules.minScore);
+      settings = collectForm();
+      await sendRuntime({ type: "SAVE_SETTINGS", settings });
+      showToast(response.message || "LLM 已生成匹配规则");
+    } catch (error) {
+      showToast(error.message || String(error));
+    } finally {
+      generateMatchRulesButton.disabled = false;
     }
   });
 
