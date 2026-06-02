@@ -767,19 +767,12 @@
   function deriveAgentQueries(settings, currentUrl = "") {
     const profile = settings.profile || {};
     const filters = settings.filters || {};
-    const currentQuery = (() => {
-      try {
-        return new URL(currentUrl).searchParams.get("query") || "";
-      } catch (_error) {
-        return "";
-      }
-    })();
-    const excluded = new Set(shared.splitTerms(filters.excludeKeywords).map(shared.normalizeText));
+    const currentQuery = currentSearchQueryFromUrl(currentUrl);
     const roleTerms = shared.splitTerms(profile.expectedRole).filter(isUsefulAgentQuery);
     const includeTerms = shared.splitTerms(filters.includeKeywords).filter(isUsefulAgentQuery);
     const skillTerms = shared.splitTerms(profile.skills).filter(isUsefulAgentQuery);
     const resumeTerms = shared.extractResumeSignals(profile.resumeText).filter(isUsefulAgentQuery);
-    const candidates = [
+    return mergeAgentQueries(settings, [
       currentQuery,
       ...includeTerms,
       ...roleTerms,
@@ -795,8 +788,19 @@
       "Vue",
       "Node.js",
       "Go"
-    ];
+    ]);
+  }
 
+  function currentSearchQueryFromUrl(currentUrl = "") {
+    try {
+      return new URL(currentUrl).searchParams.get("query") || "";
+    } catch (_error) {
+      return "";
+    }
+  }
+
+  function mergeAgentQueries(settings, candidates) {
+    const excluded = new Set(shared.splitTerms(settings.filters?.excludeKeywords).map(shared.normalizeText));
     const queries = [];
     const seen = new Set();
     for (const value of candidates) {
@@ -811,6 +815,87 @@
       if (queries.length >= settings.automation.agentMaxQueries) break;
     }
     return queries.length ? queries : ["Python", "Java", "AI"];
+  }
+
+  function shouldUseLlmForSearchKeywords(settings) {
+    return Boolean(
+      settings.automation.llmOrganizeSearchKeywords &&
+        settings.llm.enabled &&
+        settings.llm.allowSendingResumeToLlm
+    );
+  }
+
+  function buildSearchKeywordMessages(settings, currentUrl, fallbackQueries) {
+    const profile = settings.profile || {};
+    const filters = settings.filters || {};
+    return [
+      {
+        role: "system",
+        content:
+          "You are a recruiting search strategist. Return only JSON. Create precise job-board search keywords for a candidate. Prefer short role/skill queries that work in Chinese job search boxes. Avoid broad words, company names, contact info, URLs, and excluded terms."
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          {
+            task:
+              "Return {\"queries\":[...]} with the best search keywords ordered by priority. Each query should be 2-24 characters when possible, no more than 40 characters. Mix concrete role names and core skills. Keep only terms likely to find relevant jobs.",
+            maxQueries: settings.automation.agentMaxQueries,
+            currentQuery: currentSearchQueryFromUrl(currentUrl),
+            fallbackQueries,
+            includeKeywords: filters.includeKeywords,
+            excludeKeywords: filters.excludeKeywords,
+            preferredCities: filters.preferredCities,
+            candidate: {
+              expectedRole: profile.expectedRole,
+              expectedCity: profile.expectedCity,
+              expectedSalary: profile.expectedSalary,
+              skills: profile.skills,
+              resumeSignals: shared.extractResumeSignals(profile.resumeText).slice(0, 30),
+              resume: String(profile.resumeText || "").slice(0, 3000)
+            }
+          },
+          null,
+          2
+        )
+      }
+    ];
+  }
+
+  function normalizeLlmSearchQueries(payload) {
+    const list = Array.isArray(payload)
+      ? payload
+      : payload?.queries || payload?.keywords || payload?.searchKeywords || payload?.terms || [];
+    return (Array.isArray(list) ? list : [])
+      .map((item) => (typeof item === "string" ? item : item?.query || item?.keyword || item?.term || ""))
+      .filter(Boolean);
+  }
+
+  async function deriveAgentQueriesWithLlm(settings, currentUrl = "") {
+    const fallbackQueries = deriveAgentQueries(settings, currentUrl);
+    if (!shouldUseLlmForSearchKeywords(settings)) {
+      return { queries: fallbackQueries, usedLlm: false, source: "rule" };
+    }
+
+    try {
+      const response = await callChatCompletions(settings, buildSearchKeywordMessages(settings, currentUrl, fallbackQueries));
+      const content = response?.choices?.[0]?.message?.content || "";
+      const parsed = parseLlmJson(content);
+      const llmQueries = normalizeLlmSearchQueries(parsed);
+      const queries = mergeAgentQueries(settings, [...llmQueries, ...fallbackQueries]);
+      return {
+        queries,
+        usedLlm: llmQueries.length > 0,
+        source: llmQueries.length > 0 ? "llm" : "rule"
+      };
+    } catch (error) {
+      return {
+        queries: fallbackQueries,
+        usedLlm: false,
+        source: "rule",
+        llmError: error.message || String(error)
+      };
+    }
   }
 
   function isUsefulAgentQuery(value) {
@@ -877,8 +962,9 @@
     return Math.min(60, Math.max(configuredPages, projectedPages));
   }
 
-  function buildBossAgentPlan(settings, currentUrl, targetApplications = 0) {
-    const queries = deriveAgentQueries(settings, currentUrl);
+  async function buildBossAgentPlan(settings, currentUrl, targetApplications = 0) {
+    const queryPlan = await deriveAgentQueriesWithLlm(settings, currentUrl);
+    const queries = queryPlan.queries;
     const startPage = settings.automation.agentStartPage;
     const pagesPerQuery = bossPagesPerQueryForTarget(settings, queries.length, targetApplications);
     const plan = [];
@@ -895,6 +981,9 @@
     return {
       pagesPerQuery,
       queries,
+      querySource: queryPlan.source,
+      usedLlmForQueries: queryPlan.usedLlm,
+      llmQueryError: queryPlan.llmError || "",
       targets: plan
     };
   }
@@ -937,7 +1026,7 @@
     }
 
     const targetApplications = agentTargetApplicationCount(settings);
-    const plan = buildBossAgentPlan(settings, pageStatus.url || options.sourceUrl || "", targetApplications);
+    const plan = await buildBossAgentPlan(settings, pageStatus.url || options.sourceUrl || "", targetApplications);
     automationState = {
       running: true,
       status: "running",
@@ -961,7 +1050,11 @@
         selected: 0,
         targetApplications,
         pagesPerQuery: plan.pagesPerQuery,
-        queryCount: plan.queries.length
+        queryCount: plan.queries.length,
+        queries: plan.queries.slice(0, 20),
+        querySource: plan.querySource,
+        usedLlmForQueries: plan.usedLlmForQueries,
+        llmQueryError: plan.llmQueryError
       }
     };
 

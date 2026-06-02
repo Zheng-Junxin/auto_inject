@@ -160,6 +160,7 @@ assert(automationSettings.automation.collectionScrollDelayMs === 250, "Collectio
 assert(automationSettings.filters.maxDailySubmissions === 150, "Daily submission limit should allow BOSS 150 cap");
 assert(automationSettings.automation.maxJobsPerRun === 150, "Single automation run should allow a 150-job queue");
 assert(automationSettings.automation.fillDailyLimit === true, "Agent should default to filling the configured daily limit");
+assert(automationSettings.automation.llmOrganizeSearchKeywords === true, "Agent should default to LLM-organized search keywords");
 assert(context.AutoApplyShared.cloneDefaultSettings().filters.maxDailySubmissions === 150, "Default daily limit should match the BOSS 150 cap");
 assert(context.AutoApplyShared.cloneDefaultSettings().automation.maxJobsPerRun === 150, "Default run limit should support the BOSS 150 cap");
 
@@ -217,9 +218,24 @@ assert(
     backgroundSource.includes("Math.min(60"),
   "Agent search plan should expand pages per query when filling the daily limit"
 );
+assert(
+  backgroundSource.includes("async function deriveAgentQueriesWithLlm") &&
+    backgroundSource.includes("function buildSearchKeywordMessages") &&
+    backgroundSource.includes("function normalizeLlmSearchQueries") &&
+    backgroundSource.includes("settings.llm.allowSendingResumeToLlm"),
+  "Agent search keywords should be organized by LLM only after resume-sharing consent"
+);
+assert(
+    backgroundSource.includes("const fallbackQueries = deriveAgentQueries(settings, currentUrl)") &&
+    backgroundSource.includes("llmError: error.message || String(error)") &&
+    backgroundSource.includes("querySource: queryPlan.source") &&
+    backgroundSource.includes("queries: plan.queries.slice(0, 20)"),
+  "LLM search keyword generation should fall back to rule-based queries and expose query source"
+);
 const optionsHtml = readExtensionFile("options.html");
 const optionsSource = readExtensionFile("options.js");
 assert(optionsHtml.includes('name="fillDailyLimit"') && optionsSource.includes('getValue("fillDailyLimit")'), "Options page should expose the fill daily limit setting");
+assert(optionsHtml.includes('name="llmOrganizeSearchKeywords"') && optionsSource.includes('getValue("llmOrganizeSearchKeywords")'), "Options page should expose the LLM search keyword setting");
 assert(
   backgroundSource.includes("function isUsefulAgentQuery") &&
     backgroundSource.includes("\\u4e92\\u8054\\u7f51\\u884c\\u4e1a") &&

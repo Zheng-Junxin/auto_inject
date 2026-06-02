@@ -58,7 +58,8 @@
       agentMaxPagesPerQuery: 6,
       agentStartPage: 1,
       focusApplyTab: true,
-      fillDailyLimit: true
+      fillDailyLimit: true,
+      llmOrganizeSearchKeywords: true
     },
     history: {
       applications: []
@@ -217,6 +218,7 @@
     );
     base.automation.focusApplyTab = Boolean(base.automation.focusApplyTab);
     base.automation.fillDailyLimit = Boolean(base.automation.fillDailyLimit);
+    base.automation.llmOrganizeSearchKeywords = Boolean(base.automation.llmOrganizeSearchKeywords);
 
     return base;
   }

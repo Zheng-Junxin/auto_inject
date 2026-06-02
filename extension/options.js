@@ -64,6 +64,7 @@
     setValue("autoClickApply", automation.autoClickApply);
     setValue("maxJobsPerRun", automation.maxJobsPerRun);
     setValue("fillDailyLimit", automation.fillDailyLimit);
+    setValue("llmOrganizeSearchKeywords", automation.llmOrganizeSearchKeywords);
     setValue("closeTabsAfterApply", automation.closeTabsAfterApply);
     setValue("navigationDelayMs", automation.navigationDelayMs);
     setValue("stopOnBlocking", automation.stopOnBlocking);
@@ -113,6 +114,7 @@
         autoClickApply: getValue("autoClickApply"),
         maxJobsPerRun: getValue("maxJobsPerRun"),
         fillDailyLimit: getValue("fillDailyLimit"),
+        llmOrganizeSearchKeywords: getValue("llmOrganizeSearchKeywords"),
         closeTabsAfterApply: getValue("closeTabsAfterApply"),
         navigationDelayMs: getValue("navigationDelayMs"),
         stopOnBlocking: getValue("stopOnBlocking"),
