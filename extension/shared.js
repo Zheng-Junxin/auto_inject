@@ -28,7 +28,7 @@
       excludeKeywords: "培训, 保险, 电话销售, 外包驻场, 纯销售",
       preferredCities: "",
       minScore: 70,
-      maxDailySubmissions: 15,
+      maxDailySubmissions: 150,
       requireManualConfirmation: true,
       actionDelayMs: 900
     },
@@ -44,7 +44,7 @@
     automation: {
       enabled: false,
       autoClickApply: false,
-      maxJobsPerRun: 5,
+      maxJobsPerRun: 150,
       closeTabsAfterApply: true,
       navigationDelayMs: 2500,
       stopOnBlocking: true,
@@ -57,7 +57,8 @@
       agentMaxQueries: 8,
       agentMaxPagesPerQuery: 6,
       agentStartPage: 1,
-      focusApplyTab: true
+      focusApplyTab: true,
+      fillDailyLimit: true
     },
     history: {
       applications: []
@@ -215,6 +216,7 @@
       DEFAULT_SETTINGS.automation.agentStartPage
     );
     base.automation.focusApplyTab = Boolean(base.automation.focusApplyTab);
+    base.automation.fillDailyLimit = Boolean(base.automation.fillDailyLimit);
 
     return base;
   }

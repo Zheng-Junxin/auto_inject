@@ -19,6 +19,7 @@
     workerTabId: null,
     confirmedApply: false,
     mode: "single",
+    targetApplications: 0,
     agent: null
   };
 
@@ -179,6 +180,7 @@
       stoppedReason: automationState.stoppedReason,
       workerTabId: automationState.workerTabId || null,
       mode: automationState.mode || "single",
+      targetApplications: Number(automationState.targetApplications) || 0,
       agent: automationState.agent || null
     };
   }
@@ -536,6 +538,7 @@
       workerTabId: null,
       confirmedApply: false,
       mode: "single",
+      targetApplications: 0,
       agent: null
     };
   }
@@ -644,6 +647,7 @@
       workerTabId: null,
       confirmedApply: force || settings.automation.autoClickApply,
       mode: "single",
+      targetApplications: Math.min(settings.automation.maxJobsPerRun, remainingDaily),
       agent: null
     };
 
@@ -847,10 +851,36 @@
     return url.toString();
   }
 
-  function buildBossAgentPlan(settings, currentUrl) {
+  function agentTargetApplicationCount(settings) {
+    const remainingDaily = settings.filters.maxDailySubmissions - todaysApplicationCount(settings);
+    if (remainingDaily <= 0) return 0;
+    return settings.automation.fillDailyLimit
+      ? remainingDaily
+      : Math.min(settings.automation.maxJobsPerRun, remainingDaily);
+  }
+
+  function completedApplicationCount() {
+    return (automationState.completed || []).filter((entry) => {
+      const status = String(entry?.status || "").toLowerCase();
+      return status === "applied" || status === "clicked";
+    }).length;
+  }
+
+  function bossPagesPerQueryForTarget(settings, queryCount, targetApplications) {
+    const configuredPages = settings.automation.agentMaxPagesPerQuery;
+    if (!settings.automation.fillDailyLimit) {
+      return configuredPages;
+    }
+    const queryTotal = Math.max(1, queryCount);
+    const target = Math.max(1, targetApplications);
+    const projectedPages = Math.ceil(target / queryTotal) * 2;
+    return Math.min(60, Math.max(configuredPages, projectedPages));
+  }
+
+  function buildBossAgentPlan(settings, currentUrl, targetApplications = 0) {
     const queries = deriveAgentQueries(settings, currentUrl);
     const startPage = settings.automation.agentStartPage;
-    const pagesPerQuery = settings.automation.agentMaxPagesPerQuery;
+    const pagesPerQuery = bossPagesPerQueryForTarget(settings, queries.length, targetApplications);
     const plan = [];
     for (const query of queries) {
       for (let page = startPage; page < startPage + pagesPerQuery; page += 1) {
@@ -862,7 +892,11 @@
         });
       }
     }
-    return plan;
+    return {
+      pagesPerQuery,
+      queries,
+      targets: plan
+    };
   }
 
   async function startAgentAutomation(sourceTabId = null, options = {}) {
@@ -902,7 +936,8 @@
       return { status: getAutomationSnapshot(), message: "Daily application limit reached" };
     }
 
-    const plan = buildBossAgentPlan(settings, pageStatus.url || options.sourceUrl || "");
+    const targetApplications = agentTargetApplicationCount(settings);
+    const plan = buildBossAgentPlan(settings, pageStatus.url || options.sourceUrl || "", targetApplications);
     automationState = {
       running: true,
       status: "running",
@@ -915,24 +950,28 @@
       workerTabId: null,
       confirmedApply: force || settings.automation.autoClickApply,
       mode: "agent",
+      targetApplications,
       agent: {
         siteId: "boss",
-        plannedPages: plan.length,
+        plannedPages: plan.targets.length,
         pageIndex: 0,
         query: "",
         page: 0,
         collected: 0,
-        selected: 0
+        selected: 0,
+        targetApplications,
+        pagesPerQuery: plan.pagesPerQuery,
+        queryCount: plan.queries.length
       }
     };
 
-    runAgentAutomation(numericTabId, plan).catch((error) => {
+    runAgentAutomation(numericTabId, plan.targets).catch((error) => {
       automationState.running = false;
       automationState.status = "failed";
       automationState.stoppedReason = error.message || String(error);
     });
 
-    return { status: getAutomationSnapshot(), message: `Agent auto apply started with ${plan.length} planned search pages` };
+    return { status: getAutomationSnapshot(), message: `Agent auto apply started with ${plan.targets.length} planned search pages` };
   }
 
   async function runAgentAutomation(sourceTabId, plan) {
@@ -945,6 +984,14 @@
         const target = plan[index];
         let settings = await getSettings();
         const remainingDaily = settings.filters.maxDailySubmissions - todaysApplicationCount(settings);
+        const runRemaining = Math.max(0, (automationState.targetApplications || remainingDaily) - completedApplicationCount());
+        if (runRemaining <= 0) {
+          automationState.agent = {
+            ...(automationState.agent || {}),
+            targetReached: true
+          };
+          break;
+        }
         if (remainingDaily <= 0) {
           automationState.stoppedReason = "Daily application limit reached";
           break;
@@ -977,7 +1024,8 @@
 
         settings = await getSettings();
         const freshRemainingDaily = settings.filters.maxDailySubmissions - todaysApplicationCount(settings);
-        const selected = await selectApplicableJobs(collected.jobs, settings, freshRemainingDaily);
+        const freshRunRemaining = Math.max(0, (automationState.targetApplications || freshRemainingDaily) - completedApplicationCount());
+        const selected = await selectApplicableJobs(collected.jobs, settings, Math.min(freshRemainingDaily, freshRunRemaining));
         automationState.agent = {
           ...(automationState.agent || {}),
           collected: collected.jobs.length,

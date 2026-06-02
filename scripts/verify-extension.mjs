@@ -159,6 +159,9 @@ assert(automationSettings.automation.collectionMaxPages === 15, "Collection page
 assert(automationSettings.automation.collectionScrollDelayMs === 250, "Collection delay should be clamped");
 assert(automationSettings.filters.maxDailySubmissions === 150, "Daily submission limit should allow BOSS 150 cap");
 assert(automationSettings.automation.maxJobsPerRun === 150, "Single automation run should allow a 150-job queue");
+assert(automationSettings.automation.fillDailyLimit === true, "Agent should default to filling the configured daily limit");
+assert(context.AutoApplyShared.cloneDefaultSettings().filters.maxDailySubmissions === 150, "Default daily limit should match the BOSS 150 cap");
+assert(context.AutoApplyShared.cloneDefaultSettings().automation.maxJobsPerRun === 150, "Default run limit should support the BOSS 150 cap");
 
 const backgroundSource = readExtensionFile("background.js");
 assert(backgroundSource.includes("function uniqueJobs"), "Automation queue must dedupe jobs before applying");
@@ -196,6 +199,27 @@ assert(
     backgroundSource.includes("function runAgentAutomation"),
   "Popup auto apply should start a background agent that can search and page through BOSS jobs"
 );
+assert(
+  backgroundSource.includes("function agentTargetApplicationCount") &&
+    backgroundSource.includes("settings.automation.fillDailyLimit") &&
+    backgroundSource.includes("targetApplications"),
+  "Agent auto apply should target the remaining daily application capacity"
+);
+assert(
+  backgroundSource.includes("targetReached: true") &&
+    !backgroundSource.includes("Daily application target reached") &&
+    !backgroundSource.includes("Run application target reached"),
+  "Agent target completion should finish as completed instead of stopped"
+);
+assert(
+  backgroundSource.includes("function bossPagesPerQueryForTarget") &&
+    backgroundSource.includes("Math.ceil(target / queryTotal) * 2") &&
+    backgroundSource.includes("Math.min(60"),
+  "Agent search plan should expand pages per query when filling the daily limit"
+);
+const optionsHtml = readExtensionFile("options.html");
+const optionsSource = readExtensionFile("options.js");
+assert(optionsHtml.includes('name="fillDailyLimit"') && optionsSource.includes('getValue("fillDailyLimit")'), "Options page should expose the fill daily limit setting");
 assert(
   backgroundSource.includes("function isUsefulAgentQuery") &&
     backgroundSource.includes("\\u4e92\\u8054\\u7f51\\u884c\\u4e1a") &&
