@@ -161,6 +161,7 @@ assert(automationSettings.filters.maxDailySubmissions === 150, "Daily submission
 assert(automationSettings.automation.maxJobsPerRun === 150, "Single automation run should allow a 150-job queue");
 assert(automationSettings.automation.fillDailyLimit === true, "Agent should default to filling the configured daily limit");
 assert(automationSettings.automation.llmOrganizeSearchKeywords === true, "Agent should default to LLM-organized search keywords");
+assert(context.AutoApplyShared.cloneDefaultSettings().automation.agentMaxQueries === 20, "Agent should default to searching more matching keywords");
 assert(context.AutoApplyShared.cloneDefaultSettings().filters.maxDailySubmissions === 150, "Default daily limit should match the BOSS 150 cap");
 assert(context.AutoApplyShared.cloneDefaultSettings().automation.maxJobsPerRun === 150, "Default run limit should support the BOSS 150 cap");
 
@@ -234,6 +235,13 @@ assert(
   "Agent should interleave queries by page and fall back to local scoring if LLM scoring fails"
 );
 assert(
+  backgroundSource.includes("async function previewBossAgentPlan") &&
+    backgroundSource.includes('case "PREVIEW_AGENT_PLAN"') &&
+    backgroundSource.includes("Search plan exhausted before daily quota") &&
+    backgroundSource.includes("exhaustedPlan: true"),
+  "Agent should expose a dry-run plan preview and explain quota shortfalls after scanning every planned page"
+);
+assert(
   backgroundSource.includes("async function deriveAgentQueriesWithLlm") &&
     backgroundSource.includes("function buildSearchKeywordMessages") &&
     backgroundSource.includes("function normalizeLlmSearchQueries") &&
@@ -263,6 +271,7 @@ assert(
   optionsHtml.includes('name="agentMaxQueries"') &&
     optionsHtml.includes('name="agentMaxPagesPerQuery"') &&
     optionsHtml.includes('name="agentStartPage"') &&
+    optionsHtml.includes('max="50"') &&
     optionsSource.includes('getValue("agentMaxQueries")'),
   "Options page should expose agent search breadth settings"
 );

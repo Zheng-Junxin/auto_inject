@@ -54,7 +54,7 @@
       collectionMaxPages: 3,
       collectionScrollDelayMs: 900,
       collectionClickNextPage: true,
-      agentMaxQueries: 8,
+      agentMaxQueries: 20,
       agentMaxPagesPerQuery: 6,
       agentStartPage: 1,
       focusApplyTab: true,
@@ -201,7 +201,7 @@
     base.automation.agentMaxQueries = clampNumber(
       base.automation.agentMaxQueries,
       1,
-      20,
+      50,
       DEFAULT_SETTINGS.automation.agentMaxQueries
     );
     base.automation.agentMaxPagesPerQuery = clampNumber(

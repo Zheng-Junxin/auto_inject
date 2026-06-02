@@ -1087,6 +1087,29 @@
     };
   }
 
+  async function previewBossAgentPlan(currentUrl = "") {
+    const settings = await getSettings();
+    const targetApplications = agentTargetApplicationCount(settings);
+    const plan = await buildBossAgentPlan(settings, currentUrl, targetApplications);
+    return {
+      targetApplications,
+      todayCount: todaysApplicationCount(settings),
+      dailyLimit: settings.filters.maxDailySubmissions,
+      queryCount: plan.queries.length,
+      queries: plan.queries,
+      querySource: plan.querySource,
+      usedLlmForQueries: plan.usedLlmForQueries,
+      llmQueryError: plan.llmQueryError,
+      pagesPerQuery: plan.pagesPerQuery,
+      plannedPages: plan.targets.length,
+      firstTargets: plan.targets.slice(0, 40).map((target) => ({
+        query: target.query,
+        page: target.page,
+        url: target.url
+      }))
+    };
+  }
+
   async function startAgentAutomation(sourceTabId = null, options = {}) {
     if (automationState.running) {
       return { status: getAutomationSnapshot(), message: "Automation is already running" };
@@ -1168,11 +1191,13 @@
 
   async function runAgentAutomation(sourceTabId, plan) {
     let workerTab = null;
+    let processedPages = 0;
     try {
       workerTab = await tabsCreate({ url: "about:blank", active: false });
       automationState.workerTabId = workerTab.id;
 
       for (let index = 0; automationState.running && index < plan.length; index += 1) {
+        processedPages = index + 1;
         const target = plan[index];
         let settings = await getSettings();
         const remainingDaily = settings.filters.maxDailySubmissions - todaysApplicationCount(settings);
@@ -1192,6 +1217,7 @@
         automationState.agent = {
           ...(automationState.agent || {}),
           pageIndex: index + 1,
+          processedPages,
           query: target.query,
           page: target.page,
           collected: 0,
@@ -1239,6 +1265,21 @@
         await tabsRemove(workerTab.id);
       }
       automationState.workerTabId = null;
+    }
+
+    if (!automationState.stoppedReason) {
+      const settings = await getSettings();
+      const remainingDaily = Math.max(0, settings.filters.maxDailySubmissions - todaysApplicationCount(settings));
+      const runRemaining = Math.max(0, (automationState.targetApplications || remainingDaily) - completedApplicationCount());
+      if (processedPages >= plan.length && remainingDaily > 0 && runRemaining > 0) {
+        automationState.stoppedReason = `Search plan exhausted before daily quota; ${runRemaining} applications still needed`;
+        automationState.agent = {
+          ...(automationState.agent || {}),
+          exhaustedPlan: true,
+          remainingTarget: runRemaining,
+          processedPages
+        };
+      }
     }
 
     automationState.running = false;
@@ -1402,6 +1443,8 @@
             force: Boolean(message.force),
             sourceUrl: message.sourceUrl || ""
           });
+        case "PREVIEW_AGENT_PLAN":
+          return await previewBossAgentPlan(message.sourceUrl || "");
         case "STOP_AUTOMATION":
           resetAutomation("stopped", "用户停止");
           return { status: getAutomationSnapshot() };
