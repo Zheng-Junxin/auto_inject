@@ -180,7 +180,14 @@ assert(
 assert(!backgroundSource.includes("tabsCreate({ url: job.url"), "Automation must not open one tab per job");
 
 const popupSource = readExtensionFile("popup.js");
-assert(popupSource.includes("force: true"), "Popup auto apply must explicitly authorize a user-triggered run");
+const contentSource = readExtensionFile("contentScript.js");
+assert(!popupSource.includes("force: true"), "Popup auto apply should respect automation settings instead of forcing a run");
+assert(
+  backgroundSource.includes("confirmedApply: settings.automation.autoClickApply") &&
+    contentSource.includes("const requiresClickConfirmation") &&
+    contentSource.includes("automationJob && !settings.automation.autoClickApply"),
+  "Auto-click apply checkbox must control whether automation may click apply"
+);
 assert(
   backgroundSource.includes("message.sourceTabId ?? sender.tab?.id ?? null"),
   "Automation should infer the source tab for content-script initiated runs"
@@ -219,6 +226,14 @@ assert(
   "Agent search plan should expand pages per query when filling the daily limit"
 );
 assert(
+  backgroundSource.indexOf("for (let page = startPage; page < startPage + pagesPerQuery") <
+    backgroundSource.indexOf("for (const query of queries)") &&
+    backgroundSource.includes("const scoredResult = await scoreJobsWithLlm(sourceJobs)") &&
+    backgroundSource.includes("catch (_error)") &&
+    backgroundSource.includes("usedLlmForQueue = false"),
+  "Agent should interleave queries by page and fall back to local scoring if LLM scoring fails"
+);
+assert(
   backgroundSource.includes("async function deriveAgentQueriesWithLlm") &&
     backgroundSource.includes("function buildSearchKeywordMessages") &&
     backgroundSource.includes("function normalizeLlmSearchQueries") &&
@@ -244,6 +259,13 @@ const optionsSource = readExtensionFile("options.js");
 assert(optionsHtml.includes('name="fillDailyLimit"') && optionsSource.includes('getValue("fillDailyLimit")'), "Options page should expose the fill daily limit setting");
 assert(optionsHtml.includes('name="llmOrganizeSearchKeywords"') && optionsSource.includes('getValue("llmOrganizeSearchKeywords")'), "Options page should expose the LLM search keyword setting");
 assert(optionsHtml.includes('id="generateMatchRules"') && optionsSource.includes('type: "GENERATE_MATCH_RULES"'), "Options page should expose an LLM generate button for match rules");
+assert(
+  optionsHtml.includes('name="agentMaxQueries"') &&
+    optionsHtml.includes('name="agentMaxPagesPerQuery"') &&
+    optionsHtml.includes('name="agentStartPage"') &&
+    optionsSource.includes('getValue("agentMaxQueries")'),
+  "Options page should expose agent search breadth settings"
+);
 assert(
   backgroundSource.includes("function isUsefulAgentQuery") &&
     backgroundSource.includes("\\u4e92\\u8054\\u7f51\\u884c\\u4e1a") &&
@@ -274,7 +296,6 @@ assert(
   "Agent collection should keep the search tab in the foreground and only focus worker tabs during apply"
 );
 
-const contentSource = readExtensionFile("contentScript.js");
 assert(
   contentSource.includes("detectBlockingState({ actionAvailable: Boolean(actionButton) })"),
   "Apply flow should not treat optional resume prompts as hard blockers when an action button is available"

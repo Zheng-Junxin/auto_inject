@@ -641,9 +641,14 @@
     let scored = sourceJobs;
     let usedLlmForQueue = settings.llm.enabled && sourceJobs.some((job) => job.llmDecision);
     if (settings.llm.enabled && !usedLlmForQueue) {
-      const scoredResult = await scoreJobsWithLlm(sourceJobs);
-      scored = scoredResult.jobs;
-      usedLlmForQueue = Boolean(scoredResult.usedLlm);
+      try {
+        const scoredResult = await scoreJobsWithLlm(sourceJobs);
+        scored = scoredResult.jobs;
+        usedLlmForQueue = Boolean(scoredResult.usedLlm);
+      } catch (_error) {
+        scored = sourceJobs;
+        usedLlmForQueue = false;
+      }
     }
 
     const threshold = usedLlmForQueue ? settings.llm.minScore : settings.filters.minScore;
@@ -693,9 +698,14 @@
     let scored = sourceJobs;
     let usedLlmForQueue = settings.llm.enabled && sourceJobs.some((job) => job.llmDecision);
     if (settings.llm.enabled && !usedLlmForQueue) {
-      const scoredResult = await scoreJobsWithLlm(sourceJobs);
-      scored = scoredResult.jobs;
-      usedLlmForQueue = Boolean(scoredResult.usedLlm);
+      try {
+        const scoredResult = await scoreJobsWithLlm(sourceJobs);
+        scored = scoredResult.jobs;
+        usedLlmForQueue = Boolean(scoredResult.usedLlm);
+      } catch (_error) {
+        scored = sourceJobs;
+        usedLlmForQueue = false;
+      }
     }
     const todayCount = todaysApplicationCount(settings);
     const remainingDaily = settings.filters.maxDailySubmissions - todayCount;
@@ -734,7 +744,7 @@
       startedAt: new Date().toISOString(),
       stoppedReason: "",
       workerTabId: null,
-      confirmedApply: force || settings.automation.autoClickApply,
+      confirmedApply: settings.automation.autoClickApply,
       mode: "single",
       targetApplications: Math.min(settings.automation.maxJobsPerRun, remainingDaily),
       agent: null
@@ -1057,8 +1067,8 @@
     const startPage = settings.automation.agentStartPage;
     const pagesPerQuery = bossPagesPerQueryForTarget(settings, queries.length, targetApplications);
     const plan = [];
-    for (const query of queries) {
-      for (let page = startPage; page < startPage + pagesPerQuery; page += 1) {
+    for (let page = startPage; page < startPage + pagesPerQuery; page += 1) {
+      for (const query of queries) {
         plan.push({
           siteId: "boss",
           query,
@@ -1126,7 +1136,7 @@
       startedAt: new Date().toISOString(),
       stoppedReason: "",
       workerTabId: null,
-      confirmedApply: force || settings.automation.autoClickApply,
+      confirmedApply: settings.automation.autoClickApply,
       mode: "agent",
       targetApplications,
       agent: {

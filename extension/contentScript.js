@@ -911,7 +911,11 @@
       };
     }
 
-    if (settings.filters.requireManualConfirmation && !confirmed) {
+    const requiresClickConfirmation =
+      settings.filters.requireManualConfirmation ||
+      (automationJob && !settings.automation.autoClickApply);
+
+    if (requiresClickConfirmation && !confirmed) {
       return {
         applied: false,
         blocked: false,

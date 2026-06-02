@@ -309,8 +309,7 @@
         const response = await sendRuntime({
           type: "START_AGENT_AUTO_APPLY",
           sourceTabId: activeTab.id,
-          sourceUrl: activeTab.url || "",
-          force: true
+          sourceUrl: activeTab.url || ""
         });
         if (response.error) {
           setMessage(`Agent auto apply failed: ${response.error}`, true);
@@ -332,8 +331,7 @@
       const response = await sendRuntime({
         type: "START_AUTO_APPLY",
         jobs: lastJobs,
-        sourceTabId: activeTab && activeTab.id,
-        force: true
+        sourceTabId: activeTab && activeTab.id
       });
       if (response.error) {
         setMessage(`自动化启动失败：${response.error}`, true);

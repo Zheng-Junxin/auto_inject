@@ -75,6 +75,9 @@
     setValue("collectionMaxPages", automation.collectionMaxPages);
     setValue("collectionScrollDelayMs", automation.collectionScrollDelayMs);
     setValue("collectionClickNextPage", automation.collectionClickNextPage);
+    setValue("agentMaxQueries", automation.agentMaxQueries);
+    setValue("agentMaxPagesPerQuery", automation.agentMaxPagesPerQuery);
+    setValue("agentStartPage", automation.agentStartPage);
     renderHistory();
   }
 
@@ -124,7 +127,10 @@
         collectionMaxScrolls: getValue("collectionMaxScrolls"),
         collectionMaxPages: getValue("collectionMaxPages"),
         collectionScrollDelayMs: getValue("collectionScrollDelayMs"),
-        collectionClickNextPage: getValue("collectionClickNextPage")
+        collectionClickNextPage: getValue("collectionClickNextPage"),
+        agentMaxQueries: getValue("agentMaxQueries"),
+        agentMaxPagesPerQuery: getValue("agentMaxPagesPerQuery"),
+        agentStartPage: getValue("agentStartPage")
       }
     });
   }
