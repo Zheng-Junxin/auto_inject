@@ -214,6 +214,17 @@ assert(
     backgroundSource.includes("BOSS chat page opened after navigation"),
   "Application worker tabs should run in the foreground and re-check BOSS chat navigation after clicks"
 );
+assert(
+  backgroundSource.includes("function collectionWarmupDelayMs") &&
+    backgroundSource.includes("scrollDelay * 8") &&
+    backgroundSource.includes("await wait(collectionWarmupDelayMs(settings))"),
+  "Agent collection should wait for dynamic job lists to settle before scanning"
+);
+assert(
+  backgroundSource.includes('workerTab = await tabsCreate({ url: "about:blank", active: false })') &&
+    backgroundSource.includes("await tabsUpdate(sourceTabId, { url: target.url, active: true })"),
+  "Agent collection should keep the search tab in the foreground and only focus worker tabs during apply"
+);
 
 const contentSource = readExtensionFile("contentScript.js");
 assert(

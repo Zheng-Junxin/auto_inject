@@ -73,6 +73,13 @@
     };
   }
 
+  function collectionWarmupDelayMs(settings) {
+    const automation = settings.automation || {};
+    const navigationDelay = Number(automation.navigationDelayMs) || 0;
+    const scrollDelay = Number(automation.collectionScrollDelayMs) || 0;
+    return Math.max(navigationDelay, scrollDelay * 8, 6000);
+  }
+
   function sendTabMessage(tabId, message) {
     return new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(tabId, message, (response) => {
@@ -931,8 +938,7 @@
   async function runAgentAutomation(sourceTabId, plan) {
     let workerTab = null;
     try {
-      const initialSettings = await getSettings();
-      workerTab = await tabsCreate({ url: "about:blank", active: Boolean(initialSettings.automation.focusApplyTab) });
+      workerTab = await tabsCreate({ url: "about:blank", active: false });
       automationState.workerTabId = workerTab.id;
 
       for (let index = 0; automationState.running && index < plan.length; index += 1) {
@@ -954,9 +960,9 @@
         };
         automationState.current = { title: `${target.query} page ${target.page}`, company: "Collecting jobs", url: target.url };
 
-        await tabsUpdate(sourceTabId, { url: target.url });
+        await tabsUpdate(sourceTabId, { url: target.url, active: true });
         await waitForTabReady(sourceTabId, 30000);
-        await wait(settings.automation.navigationDelayMs);
+        await wait(collectionWarmupDelayMs(settings));
 
         const collected = await collectJobsFromTab(sourceTabId, {
           withLlm: settings.llm.enabled,
