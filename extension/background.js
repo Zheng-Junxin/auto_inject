@@ -497,10 +497,15 @@
     let usedLlm = false;
     let llmMessage = "";
     if (withLlm && settings.llm.enabled && jobs.length) {
-      const scored = await scoreJobsWithLlm(jobs);
-      jobs = scored.jobs;
-      usedLlm = Boolean(scored.usedLlm);
-      llmMessage = scored.message || "";
+      try {
+        const scored = await scoreJobsWithLlm(jobs);
+        jobs = scored.jobs;
+        usedLlm = Boolean(scored.usedLlm);
+        llmMessage = scored.message || "";
+      } catch (error) {
+        usedLlm = false;
+        llmMessage = `LLM scoring failed during collection; using local scores: ${error.message || String(error)}`;
+      }
     }
 
     return {

@@ -235,6 +235,12 @@ assert(
   "Agent should interleave queries by page and fall back to local scoring if LLM scoring fails"
 );
 assert(
+  backgroundSource.includes("LLM scoring failed during collection; using local scores") &&
+    backgroundSource.includes("const scored = await scoreJobsWithLlm(jobs)") &&
+    backgroundSource.includes("llmMessage = `LLM scoring failed during collection"),
+  "Collection should fall back to local scores when LLM scoring fails"
+);
+assert(
   backgroundSource.includes("async function previewBossAgentPlan") &&
     backgroundSource.includes('case "PREVIEW_AGENT_PLAN"') &&
     backgroundSource.includes("Search plan exhausted before daily quota") &&
