@@ -614,15 +614,16 @@
     };
   }
 
-  function resetAutomation(status = "idle", stoppedReason = "") {
+  function resetAutomation(status = "idle", stoppedReason = "", options = {}) {
+    const preserveResults = options.preserveResults !== false;
     automationState = {
       running: false,
       status,
       queue: [],
       current: null,
-      completed: automationState.completed || [],
-      failed: automationState.failed || [],
-      startedAt: automationState.startedAt || "",
+      completed: preserveResults ? automationState.completed || [] : [],
+      failed: preserveResults ? automationState.failed || [] : [],
+      startedAt: preserveResults ? automationState.startedAt || "" : "",
       stoppedReason,
       workerTabId: null,
       confirmedApply: false,
@@ -710,6 +711,7 @@
     const todayCount = todaysApplicationCount(settings);
     const remainingDaily = settings.filters.maxDailySubmissions - todayCount;
     if (remainingDaily <= 0) {
+      resetAutomation("stopped", "Daily application limit reached", { preserveResults: false });
       return { status: getAutomationSnapshot(), message: `今日已达到 ${settings.filters.maxDailySubmissions} 次上限` };
     }
 
@@ -1144,6 +1146,7 @@
 
     const todayCount = todaysApplicationCount(settings);
     if (todayCount >= settings.filters.maxDailySubmissions) {
+      resetAutomation("stopped", "Daily application limit reached", { preserveResults: false });
       return { status: getAutomationSnapshot(), message: "Daily application limit reached" };
     }
 

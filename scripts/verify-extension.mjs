@@ -242,6 +242,11 @@ assert(
   "Agent should expose a dry-run plan preview and explain quota shortfalls after scanning every planned page"
 );
 assert(
+  backgroundSource.includes("preserveResults !== false") &&
+    backgroundSource.includes('resetAutomation("stopped", "Daily application limit reached", { preserveResults: false })'),
+  "Daily limit startup checks should return a clean stopped status instead of stale prior run results"
+);
+assert(
   backgroundSource.includes("async function deriveAgentQueriesWithLlm") &&
     backgroundSource.includes("function buildSearchKeywordMessages") &&
     backgroundSource.includes("function normalizeLlmSearchQueries") &&
