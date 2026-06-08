@@ -142,6 +142,10 @@
     base.automation = mergeSection(base.automation, stored.automation);
     base.history = mergeSection(base.history, stored.history);
 
+    base.llm.baseUrl = String(base.llm.baseUrl || "").trim();
+    base.llm.model = String(base.llm.model || "").trim();
+    base.llm.apiKey = String(base.llm.apiKey || "").trim();
+
     if (!Array.isArray(base.history.applications)) {
       base.history.applications = [];
     }

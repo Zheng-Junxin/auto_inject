@@ -47,6 +47,16 @@
     });
   }
 
+  function tabsReload(tabId, reloadProperties = {}) {
+    return new Promise((resolve, reject) => {
+      chrome.tabs.reload(tabId, reloadProperties, () => {
+        const error = chrome.runtime.lastError;
+        if (error) reject(new Error(error.message));
+        else resolve();
+      });
+    });
+  }
+
   function tabsUpdate(tabId, updateProperties) {
     return new Promise((resolve, reject) => {
       chrome.tabs.update(tabId, updateProperties, (tab) => {
@@ -81,13 +91,46 @@
     return Math.max(navigationDelay, scrollDelay * 8, 6000);
   }
 
+  function tabMessageTimeoutMs(message) {
+    switch (message?.type) {
+      case "GET_PAGE_STATUS":
+        return 8000;
+      case "SCAN_JOBS":
+        return 30000;
+      case "COLLECT_CURRENT_PAGE":
+        return 180000;
+      case "APPLY_CURRENT_PAGE":
+      case "FILL_CURRENT_PAGE":
+        return 90000;
+      default:
+        return 30000;
+    }
+  }
+
   function sendTabMessage(tabId, message) {
     return new Promise((resolve, reject) => {
-      chrome.tabs.sendMessage(tabId, message, (response) => {
-        const error = chrome.runtime.lastError;
-        if (error) reject(new Error(error.message));
-        else resolve(response || {});
-      });
+      let settled = false;
+      const timeoutId = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(new Error(`Content script timed out for ${message?.type || "message"}`));
+      }, tabMessageTimeoutMs(message));
+
+      try {
+        chrome.tabs.sendMessage(tabId, message, (response) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          const error = chrome.runtime.lastError;
+          if (error) reject(new Error(error.message));
+          else resolve(response || {});
+        });
+      } catch (error) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        reject(error);
+      }
     });
   }
 
@@ -114,11 +157,23 @@
       .slice(0, 500);
   }
 
+  function preserveLlmApiKey(merged, current, nextSettings) {
+    const incomingApiKey = String(nextSettings?.llm?.apiKey || "").trim();
+    if (incomingApiKey) {
+      merged.llm.apiKey = incomingApiKey;
+      return;
+    }
+    if (current.llm.apiKey) {
+      merged.llm.apiKey = current.llm.apiKey;
+    }
+  }
+
   async function saveSettings(nextSettings, { preserveHistory = true } = {}) {
+    const stored = await storageGet(SETTINGS_KEY);
+    const current = shared.mergeSettings(stored[SETTINGS_KEY]);
     const merged = shared.mergeSettings(nextSettings);
+    preserveLlmApiKey(merged, current, nextSettings);
     if (preserveHistory) {
-      const stored = await storageGet(SETTINGS_KEY);
-      const current = shared.mergeSettings(stored[SETTINGS_KEY]);
       merged.history.applications = mergeApplicationHistory(
         merged.history.applications || [],
         current.history.applications || []
@@ -292,8 +347,9 @@
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), validation.config.timeoutMs);
     const headers = { "Content-Type": "application/json" };
-    if (validation.config.apiKey) {
-      headers.Authorization = `Bearer ${validation.config.apiKey}`;
+    const apiKey = String(validation.config.apiKey || "").trim();
+    if (apiKey) {
+      headers.Authorization = `Bearer ${apiKey}`;
     }
 
     try {
@@ -598,6 +654,101 @@
     };
   }
 
+  function buildResumeParseMessages(settings, resumeText) {
+    const profile = settings.profile || {};
+    const filters = settings.filters || {};
+    return [
+      {
+        role: "system",
+        content:
+          "You are a resume parsing engine for a browser extension. Return only JSON. Extract facts from the resume without inventing. Generate practical matching rules for job auto-apply."
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          {
+            task:
+              "Return {\"profile\":{\"name\":\"\",\"phone\":\"\",\"email\":\"\",\"expectedRole\":\"\",\"expectedCity\":\"\",\"expectedSalary\":\"\",\"skills\":[]},\"rules\":{\"includeKeywords\":[],\"excludeKeywords\":[],\"preferredCities\":[],\"minScore\":number},\"summary\":\"\"}. Use empty strings/arrays when unknown. Keep minScore between 60 and 90.",
+            currentProfile: {
+              expectedRole: profile.expectedRole,
+              expectedCity: profile.expectedCity,
+              expectedSalary: profile.expectedSalary,
+              skills: profile.skills
+            },
+            currentRules: {
+              includeKeywords: filters.includeKeywords,
+              excludeKeywords: filters.excludeKeywords,
+              preferredCities: filters.preferredCities,
+              minScore: filters.minScore
+            },
+            resume: String(resumeText || "").slice(0, 10000)
+          },
+          null,
+          2
+        )
+      }
+    ];
+  }
+
+  function textValue(value, fallback = "") {
+    if (Array.isArray(value)) {
+      return normalizeRuleTerms(value, 60) || fallback;
+    }
+    const text = String(value || "").trim();
+    return text || fallback;
+  }
+
+  function normalizeLlmResumeParse(payload, settings, resumeText) {
+    const parsed = payload?.profile || payload?.candidate || payload?.resume || payload || {};
+    const current = settings.profile || {};
+    const localHints = shared.extractProfileHints(resumeText);
+    const rulesSource = payload?.rules || payload?.matchingRules || payload?.matchRules || payload?.filters || payload || {};
+    const profile = {
+      name: textValue(parsed.name, localHints.name || current.name).slice(0, 80),
+      phone: textValue(parsed.phone || parsed.mobile, localHints.phone || current.phone).slice(0, 40),
+      email: textValue(parsed.email, localHints.email || current.email).slice(0, 120),
+      expectedRole: textValue(parsed.expectedRole || parsed.targetRole || parsed.role, localHints.expectedRole || current.expectedRole).slice(0, 120),
+      expectedCity: textValue(parsed.expectedCity || parsed.targetCity || parsed.city, localHints.expectedCity || current.expectedCity).slice(0, 120),
+      expectedSalary: textValue(parsed.expectedSalary || parsed.salary, current.expectedSalary).slice(0, 80),
+      skills: textValue(parsed.skills || parsed.skillKeywords, localHints.skills || current.skills).slice(0, 1000),
+      resumeText: String(resumeText || "").slice(0, 60000)
+    };
+    return {
+      profile,
+      rules: normalizeGeneratedMatchRules(rulesSource, settings),
+      summary: String(payload?.summary || payload?.reason || "").slice(0, 240)
+    };
+  }
+
+  async function parseResumeWithLlm(resumeText) {
+    const settings = await getSettings();
+    const normalizedResume = String(resumeText || "")
+      .replace(/\r/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+      .slice(0, 60000);
+    if (!normalizedResume) {
+      throw new Error("Resume text is empty");
+    }
+    if (!settings.llm.enabled) {
+      throw new Error("LLM is not enabled");
+    }
+    if (!settings.llm.allowSendingResumeToLlm) {
+      throw new Error("Enable resume sharing with LLM before parsing resumes");
+    }
+    const response = await callChatCompletions(settings, buildResumeParseMessages(settings, normalizedResume));
+    const content = response?.choices?.[0]?.message?.content || "";
+    const parsed = parseLlmJson(content);
+    if (!parsed) {
+      throw new Error("LLM returned non-JSON resume parse result");
+    }
+    const result = normalizeLlmResumeParse(parsed, settings, normalizedResume);
+    return {
+      ...result,
+      message: result.summary || "LLM resume parsing completed"
+    };
+  }
+
   async function generateMatchRulesWithLlm() {
     const settings = await getSettings();
     if (!settings.llm.enabled) {
@@ -638,10 +789,33 @@
     };
   }
 
-  async function selectApplicableJobs(rawJobs, settings, remainingDaily) {
+  function queueSelectionThreshold(settings, usedLlmForQueue, options = {}) {
+    const baseThreshold = usedLlmForQueue ? settings.llm.minScore : settings.filters.minScore;
+    if (usedLlmForQueue || !options.allowRelaxedThreshold) {
+      return baseThreshold;
+    }
+
+    const processedPages = Number(options.processedPages) || 0;
+    const completedThisRun = Number(options.completedThisRun) || 0;
+    if (completedThisRun > 0 && processedPages < 15) {
+      return baseThreshold;
+    }
+    if (processedPages >= 50) {
+      return Math.min(baseThreshold, 55);
+    }
+    if (processedPages >= 15) {
+      return Math.min(baseThreshold, 60);
+    }
+    if (processedPages >= 5) {
+      return Math.min(baseThreshold, 65);
+    }
+    return baseThreshold;
+  }
+
+  async function selectApplicableJobs(rawJobs, settings, remainingDaily, options = {}) {
     const sourceJobs = uniqueJobs(rawJobs);
     if (!sourceJobs.length || remainingDaily <= 0) {
-      return { queue: [], usedLlmForQueue: false, sourceCount: sourceJobs.length };
+      return { queue: [], usedLlmForQueue: false, sourceCount: sourceJobs.length, threshold: settings.filters.minScore };
     }
 
     let scored = sourceJobs;
@@ -657,7 +831,7 @@
       }
     }
 
-    const threshold = usedLlmForQueue ? settings.llm.minScore : settings.filters.minScore;
+    const threshold = queueSelectionThreshold(settings, usedLlmForQueue, options);
     const queue = uniqueJobs(scored)
       .filter((job) => {
         const score = shared.effectiveApplicationScore(job, settings);
@@ -672,9 +846,10 @@
         const rightScore = shared.effectiveApplicationScore(right, settings);
         return rightScore - leftScore;
       })
+      .map((job) => ({ ...job, applyThreshold: threshold }))
       .slice(0, Math.min(settings.automation.maxJobsPerRun, remainingDaily));
 
-    return { queue, usedLlmForQueue, sourceCount: sourceJobs.length };
+    return { queue, usedLlmForQueue, sourceCount: sourceJobs.length, threshold };
   }
 
   async function startAutomation(rawJobs, sourceTabId = null, options = {}) {
@@ -851,9 +1026,22 @@
     return recovered ? { ...result, ...recovered } : result;
   }
 
+  function withTimeout(promise, timeoutMs, message) {
+    return Promise.race([
+      promise,
+      new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error(message)), timeoutMs);
+      })
+    ]);
+  }
+
   async function getPageStatusFromTab(tabId) {
     try {
-      return await sendMessageWithRetry(tabId, { type: "GET_PAGE_STATUS" });
+      return await withTimeout(
+        sendMessageWithRetry(tabId, { type: "GET_PAGE_STATUS" }),
+        12000,
+        "Timed out while detecting page status"
+      );
     } catch (_error) {
       try {
         const tab = await tabsGet(tabId);
@@ -870,6 +1058,17 @@
     }
   }
 
+  function isRecoverableTabMessageError(error) {
+    const message = String(error?.message || error || "").toLowerCase();
+    return /back\/forward cache|message channel is closed|receiving end does not exist|could not establish connection|extension context invalidated|content script timed out/u.test(message);
+  }
+
+  async function recoverTabMessageChannel(tabId) {
+    await tabsReload(tabId, { bypassCache: true });
+    await waitForTabReady(tabId, 30000);
+    await wait(1500);
+  }
+
   function deriveAgentQueries(settings, currentUrl = "") {
     const profile = settings.profile || {};
     const filters = settings.filters || {};
@@ -878,8 +1077,10 @@
     const includeTerms = shared.splitTerms(filters.includeKeywords).filter(isUsefulAgentQuery);
     const skillTerms = shared.splitTerms(profile.skills).filter(isUsefulAgentQuery);
     const resumeTerms = shared.extractResumeSignals(profile.resumeText).filter(isUsefulAgentQuery);
+    const focusedTerms = buildRoleFocusedQueries(settings);
     return mergeAgentQueries(settings, [
       currentQuery,
+      ...focusedTerms,
       ...includeTerms,
       ...roleTerms,
       ...skillTerms,
@@ -895,6 +1096,71 @@
       "Node.js",
       "Go"
     ]);
+  }
+
+  function agentQueryLimit(settings) {
+    const configured = settings.automation.agentMaxQueries;
+    return settings.automation.fillDailyLimit
+      ? Math.min(50, Math.max(configured, 50))
+      : configured;
+  }
+
+  function buildRoleFocusedQueries(settings) {
+    const profile = settings.profile || {};
+    const filters = settings.filters || {};
+    const sourceTerms = [
+      ...shared.splitTerms(profile.expectedRole),
+      ...shared.splitTerms(filters.includeKeywords),
+      ...shared.splitTerms(profile.skills),
+      ...shared.extractResumeSignals(profile.resumeText)
+    ];
+    const haystack = shared.normalizeText([
+      profile.expectedRole,
+      filters.includeKeywords,
+      profile.skills,
+      profile.resumeText,
+      sourceTerms.join(" ")
+    ].join(" "));
+    const hasAny = (...values) => values.some((value) => haystack.includes(shared.normalizeText(value)));
+    const queries = [];
+    const add = (...values) => {
+      for (const value of values) {
+        if (isUsefulAgentQuery(value)) queries.push(value);
+      }
+    };
+
+    if (hasAny("python", "flask", "django", "fastapi")) {
+      add("Python开发", "Python工程师", "Python后端", "Python全栈", "Python实习", "Python后端开发");
+    }
+    if (hasAny("后端", "backend", "server", "api", "服务端", "mysql", "redis", "java", "spring")) {
+      add("后端开发", "服务端开发", "后端工程师", "全栈工程师", "软件开发工程师", "开发工程师", "后端实习", "初级后端");
+    }
+    if (hasAny("ai", "llm", "大模型", "rag", "agent", "aigc")) {
+      add("AI工程师", "AI应用开发", "大模型开发", "大模型应用", "AIGC开发", "AI实习", "智能体开发", "Agent开发");
+    }
+    if (hasAny("机器学习", "深度学习", "算法", "pytorch", "tensorflow", "opencv")) {
+      add("算法工程师", "机器学习算法", "深度学习算法", "AI算法工程师", "算法实习", "视觉算法");
+    }
+    if (hasAny("java", "spring", "spring boot")) {
+      add("Java开发", "Java后端", "Java工程师", "Java后端开发", "Java实习");
+    }
+    if (hasAny("javascript", "typescript", "react", "vue", "node.js", "nodejs", "html", "css")) {
+      add("全栈开发", "前端开发", "Node.js开发", "全栈实习", "Web开发");
+    }
+    if (hasAny("c++", "cpp", "c语言", "嵌入式")) {
+      add("C++开发", "C++工程师", "嵌入式开发");
+    }
+    if (hasAny("自动化", "浏览器插件", "chrome", "edge", "爬虫", "采集")) {
+      add("自动化开发", "浏览器插件开发", "数据采集工程师");
+    }
+    if (hasAny("mysql", "redis", "sql", "数据", "data", "大数据")) {
+      add("数据开发", "数据工程师", "大数据开发", "数据平台开发");
+    }
+    if (hasAny("测试", "test", "pytest", "自动化")) {
+      add("测试开发", "自动化测试开发");
+    }
+
+    return queries;
   }
 
   function currentSearchQueryFromUrl(currentUrl = "") {
@@ -918,7 +1184,7 @@
       if (/https?:|www\.|@|\d{6,}/iu.test(query)) continue;
       seen.add(key);
       queries.push(query);
-      if (queries.length >= settings.automation.agentMaxQueries) break;
+      if (queries.length >= agentQueryLimit(settings)) break;
     }
     return queries.length ? queries : ["Python", "Java", "AI"];
   }
@@ -946,7 +1212,7 @@
           {
             task:
               "Return {\"queries\":[...]} with the best search keywords ordered by priority. Each query should be 2-24 characters when possible, no more than 40 characters. Mix concrete role names and core skills. Keep only terms likely to find relevant jobs.",
-            maxQueries: settings.automation.agentMaxQueries,
+            maxQueries: agentQueryLimit(settings),
             currentQuery: currentSearchQueryFromUrl(currentUrl),
             fallbackQueries,
             includeKeywords: filters.includeKeywords,
@@ -957,8 +1223,7 @@
               expectedCity: profile.expectedCity,
               expectedSalary: profile.expectedSalary,
               skills: profile.skills,
-              resumeSignals: shared.extractResumeSignals(profile.resumeText).slice(0, 30),
-              resume: String(profile.resumeText || "").slice(0, 3000)
+              resumeSignals: shared.extractResumeSignals(profile.resumeText).slice(0, 40)
             }
           },
           null,
@@ -1064,7 +1329,7 @@
     }
     const queryTotal = Math.max(1, queryCount);
     const target = Math.max(1, targetApplications);
-    const projectedPages = Math.ceil(target / queryTotal) * 2;
+    const projectedPages = Math.ceil(target / queryTotal) * 6;
     return Math.min(60, Math.max(configuredPages, projectedPages));
   }
 
@@ -1181,6 +1446,7 @@
         targetApplications,
         pagesPerQuery: plan.pagesPerQuery,
         queryCount: plan.queries.length,
+        sourceTabId: numericTabId,
         queries: plan.queries.slice(0, 20),
         querySource: plan.querySource,
         usedLlmForQueries: plan.usedLlmForQueries,
@@ -1251,11 +1517,16 @@
         settings = await getSettings();
         const freshRemainingDaily = settings.filters.maxDailySubmissions - todaysApplicationCount(settings);
         const freshRunRemaining = Math.max(0, (automationState.targetApplications || freshRemainingDaily) - completedApplicationCount());
-        const selected = await selectApplicableJobs(collected.jobs, settings, Math.min(freshRemainingDaily, freshRunRemaining));
+        const selected = await selectApplicableJobs(collected.jobs, settings, Math.min(freshRemainingDaily, freshRunRemaining), {
+          allowRelaxedThreshold: settings.automation.fillDailyLimit,
+          completedThisRun: completedApplicationCount(),
+          processedPages
+        });
         automationState.agent = {
           ...(automationState.agent || {}),
           collected: collected.jobs.length,
-          selected: selected.queue.length
+          selected: selected.queue.length,
+          selectionThreshold: selected.threshold
         };
         if (!selected.queue.length) {
           continue;
@@ -1394,16 +1665,31 @@
 
   async function sendMessageWithRetry(tabId, message) {
     let lastError = null;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    const maxAttempts = message?.type === "GET_PAGE_STATUS" ? 3 : 20;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       try {
         return await sendTabMessage(tabId, message);
       } catch (error) {
         lastError = error;
+        if (isRecoverableTabMessageError(error) && attempt < maxAttempts - 1) {
+          try {
+            await recoverTabMessageChannel(tabId);
+          } catch (recoveryError) {
+            lastError = recoveryError;
+          }
+        }
         await wait(500);
       }
     }
     throw lastError || new Error("无法连接内容脚本");
   }
+
+  chrome.runtime.onConnect.addListener((port) => {
+    if (!["auto-apply-keepalive", "auto-apply-content-keepalive"].includes(port.name)) {
+      return;
+    }
+    port.onMessage.addListener(() => {});
+  });
 
   chrome.runtime.onInstalled.addListener(() => {
     getSettings().then(saveSettings);
@@ -1433,6 +1719,8 @@
         }
         case "TEST_LLM_CONFIG":
           return await testLlmConfig();
+        case "PARSE_RESUME_WITH_LLM":
+          return await parseResumeWithLlm(message.resumeText || "");
         case "GENERATE_MATCH_RULES":
           return await generateMatchRulesWithLlm();
         case "LLM_SCORE_JOBS":

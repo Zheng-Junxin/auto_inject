@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 
 const root = process.cwd();
 const extensionDir = path.join(root, "extension");
+const settingsKey = "autoApplySettings";
 const requiredFiles = [
   "manifest.json",
   "shared.js",
@@ -215,6 +216,14 @@ assert(
   "Agent auto apply should target the remaining daily application capacity"
 );
 assert(
+  backgroundSource.includes("function queueSelectionThreshold") &&
+    backgroundSource.includes("processedPages >= 50") &&
+    backgroundSource.includes("allowRelaxedThreshold: settings.automation.fillDailyLimit") &&
+    backgroundSource.includes("selectionThreshold: selected.threshold") &&
+    backgroundSource.includes("applyThreshold: threshold"),
+  "Agent fill-daily mode should gradually relax local thresholds while exposing the active threshold"
+);
+assert(
   backgroundSource.includes("targetReached: true") &&
     !backgroundSource.includes("Daily application target reached") &&
     !backgroundSource.includes("Run application target reached"),
@@ -222,7 +231,7 @@ assert(
 );
 assert(
   backgroundSource.includes("function bossPagesPerQueryForTarget") &&
-    backgroundSource.includes("Math.ceil(target / queryTotal) * 2") &&
+    backgroundSource.includes("Math.ceil(target / queryTotal) * 6") &&
     backgroundSource.includes("Math.min(60"),
   "Agent search plan should expand pages per query when filling the daily limit"
 );
@@ -273,11 +282,25 @@ assert(
     backgroundSource.includes('case "GENERATE_MATCH_RULES"'),
   "Options should be able to generate matching rules through the background LLM service"
 );
+assert(
+  backgroundSource.includes("async function parseResumeWithLlm") &&
+    backgroundSource.includes("function buildResumeParseMessages") &&
+    backgroundSource.includes("function normalizeLlmResumeParse") &&
+    backgroundSource.includes('case "PARSE_RESUME_WITH_LLM"'),
+  "Options should be able to enhance resume parsing through the background LLM service"
+);
 const optionsHtml = readExtensionFile("options.html");
 const optionsSource = readExtensionFile("options.js");
 assert(optionsHtml.includes('name="fillDailyLimit"') && optionsSource.includes('getValue("fillDailyLimit")'), "Options page should expose the fill daily limit setting");
 assert(optionsHtml.includes('name="llmOrganizeSearchKeywords"') && optionsSource.includes('getValue("llmOrganizeSearchKeywords")'), "Options page should expose the LLM search keyword setting");
 assert(optionsHtml.includes('id="generateMatchRules"') && optionsSource.includes('type: "GENERATE_MATCH_RULES"'), "Options page should expose an LLM generate button for match rules");
+assert(
+  optionsSource.includes('type: "PARSE_RESUME_WITH_LLM"') &&
+    optionsSource.includes("applyLlmResumeParse") &&
+    optionsSource.includes("applyGeneratedMatchRules") &&
+    optionsSource.includes("allowSendingResumeToLlm"),
+  "Resume parsing should optionally call LLM parsing and apply generated profile and matching rules"
+);
 assert(
   optionsHtml.includes('name="agentMaxQueries"') &&
     optionsHtml.includes('name="agentMaxPagesPerQuery"') &&
@@ -295,8 +318,16 @@ assert(
 assert(
   backgroundSource.includes("function mergeApplicationHistory") &&
     backgroundSource.includes("entry.url || entry.id") &&
-    backgroundSource.includes("preserveHistory: false"),
-  "Settings saves should not overwrite application history, while clear history must still work"
+    backgroundSource.includes("preserveHistory: false") &&
+    backgroundSource.includes("function preserveLlmApiKey") &&
+    backgroundSource.includes("const apiKey = String(validation.config.apiKey || \"\").trim()"),
+  "Settings saves should preserve history and saved LLM API keys, while LLM calls should trim secrets"
+);
+assert(
+  optionsSource.includes("let savedLlmApiKey = \"\"") &&
+    optionsSource.includes('setValue("llmApiKey", "")') &&
+    optionsSource.includes("apiKey: enteredApiKey || savedLlmApiKey"),
+  "Options page should not erase a saved LLM API key when the password field is left blank"
 );
 assert(
   backgroundSource.includes("focusApplyTab") &&
@@ -311,6 +342,20 @@ assert(
   "Agent collection should wait for dynamic job lists to settle before scanning"
 );
 assert(
+  backgroundSource.includes("function tabsReload") &&
+    backgroundSource.includes("function isRecoverableTabMessageError") &&
+    backgroundSource.includes("await recoverTabMessageChannel(tabId)") &&
+    backgroundSource.includes("sourceTabId: numericTabId"),
+  "Agent should recover bfcache/disconnected content-script message channels and expose the source tab id"
+);
+assert(
+  backgroundSource.includes("chrome.runtime.onConnect.addListener") &&
+    backgroundSource.includes("auto-apply-keepalive") &&
+    contentSource.includes("auto-apply-content-keepalive") &&
+    optionsSource.includes("auto-apply-keepalive"),
+  "Long-running MV3 automation should keep the background service worker alive while job pages/options are open"
+);
+assert(
   backgroundSource.includes('workerTab = await tabsCreate({ url: "about:blank", active: false })') &&
     backgroundSource.includes("await tabsUpdate(sourceTabId, { url: target.url, active: true })"),
   "Agent collection should keep the search tab in the foreground and only focus worker tabs during apply"
@@ -319,6 +364,12 @@ assert(
 assert(
   contentSource.includes("detectBlockingState({ actionAvailable: Boolean(actionButton) })"),
   "Apply flow should not treat optional resume prompts as hard blockers when an action button is available"
+);
+assert(
+  contentSource.includes("function applicationThreshold") &&
+    contentSource.includes("effectiveJob?.applyThreshold") &&
+    contentSource.includes("const threshold = applicationThreshold(settings, effectiveJob)"),
+  "Apply detail-page verification should use the queue-selected threshold when fill-daily mode relaxed it"
 );
 assert(
   contentSource.includes("function scoreScrollableCandidate") &&
@@ -350,5 +401,284 @@ assert(
   popupSource.includes("START_AGENT_AUTO_APPLY"),
   "Popup auto apply button should launch the background agent"
 );
+
+async function simulateAgentFillsDailyLimit() {
+  const today = new Date().toISOString();
+  const sourceTabId = 1;
+  let nextTabId = 2;
+  let messageListener = null;
+  const updateListeners = new Set();
+  const tabs = new Map([
+    [
+      sourceTabId,
+      {
+        id: sourceTabId,
+        url: "https://www.zhipin.com/web/geek/jobs?query=Python&page=1",
+        title: "BOSS jobs",
+        status: "complete"
+      }
+    ]
+  ]);
+  const storage = {
+    [settingsKey]: context.AutoApplyShared.mergeSettings({
+      profile: {
+        expectedRole: "Python Backend Engineer",
+        expectedCity: "Shenzhen",
+        skills: "Python, Flask, PostgreSQL",
+        resumeText: "Python backend engineer with Flask PostgreSQL API experience"
+      },
+      filters: {
+        includeKeywords: "Python, Flask, PostgreSQL",
+        minScore: 70,
+        maxDailySubmissions: 150,
+        requireManualConfirmation: false
+      },
+      llm: {
+        enabled: false,
+        allowSendingResumeToLlm: false
+      },
+      automation: {
+        enabled: true,
+        autoClickApply: true,
+        fillDailyLimit: true,
+        maxJobsPerRun: 150,
+        closeTabsAfterApply: true,
+        navigationDelayMs: 500,
+        collectionMaxScrolls: 1,
+        collectionMaxPages: 1,
+        collectionScrollDelayMs: 250,
+        agentMaxQueries: 20,
+        agentMaxPagesPerQuery: 6,
+        agentStartPage: 1,
+        stopOnBlocking: true,
+        skipAlreadyApplied: true
+      },
+      history: {
+        applications: []
+      }
+    })
+  };
+  const appliedUrls = [];
+  const visitedSearchUrls = [];
+
+  function cloneData(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function currentSettings() {
+    return storage[settingsKey];
+  }
+
+  function makeJobs(url) {
+    const parsed = new URL(url);
+    const query = parsed.searchParams.get("query") || "Python";
+    const page = parsed.searchParams.get("page") || "1";
+    return Array.from({ length: 12 }, (_unused, index) => {
+      const id = `${query}-${page}-${index}`;
+      return {
+        id: `boss:${id}`,
+        siteId: "boss",
+        siteName: "BOSS",
+        title: `${query} Backend Engineer ${page}-${index}`,
+        company: `Test Company ${page}-${index}`,
+        city: "Shenzhen",
+        salary: "15-25K",
+        description: "Python Flask PostgreSQL API backend development",
+        rawText: "Python Flask PostgreSQL API backend development",
+        url: `https://www.zhipin.com/job_detail/${encodeURIComponent(id)}.html`,
+        score: 92,
+        confidence: "high",
+        positives: ["Python", "Flask"],
+        negatives: []
+      };
+    });
+  }
+
+  function finishTabUpdate(tabId) {
+    for (const listener of updateListeners) {
+      listener(tabId, { status: "complete" });
+    }
+  }
+
+  const simulationContext = {
+    console,
+    URL,
+    clearTimeout,
+    fetch: async () => {
+      throw new Error("LLM/network should not be used in the fill-limit simulation");
+    },
+    globalThis: null,
+    importScripts: (...files) => {
+      for (const file of files) {
+        vm.runInContext(readExtensionFile(file), simulationContext, { filename: file });
+      }
+    },
+    setTimeout: (callback, _ms, ...args) => setTimeout(callback, 0, ...args)
+  };
+  simulationContext.globalThis = simulationContext;
+  simulationContext.chrome = {
+    permissions: {
+      contains(_details, callback) {
+        callback(false);
+      }
+    },
+    runtime: {
+      lastError: null,
+      onConnect: { addListener() {} },
+      onInstalled: { addListener() {} },
+      onMessage: {
+        addListener(listener) {
+          messageListener = listener;
+        }
+      }
+    },
+    storage: {
+      local: {
+        get(keys, callback) {
+          if (typeof keys === "string") {
+            callback({ [keys]: cloneData(storage[keys]) });
+            return;
+          }
+          callback(cloneData(storage));
+        },
+        set(value, callback) {
+          Object.assign(storage, cloneData(value));
+          callback?.();
+        }
+      }
+    },
+    tabs: {
+      onUpdated: {
+        addListener(listener) {
+          updateListeners.add(listener);
+        },
+        removeListener(listener) {
+          updateListeners.delete(listener);
+        }
+      },
+      create(properties, callback) {
+        const tab = {
+          id: nextTabId++,
+          url: properties.url || "about:blank",
+          title: "",
+          active: Boolean(properties.active),
+          status: "complete"
+        };
+        tabs.set(tab.id, tab);
+        callback(tab);
+      },
+      remove(tabId, callback) {
+        tabs.delete(tabId);
+        callback?.();
+      },
+      reload(tabId, _properties, callback) {
+        const tab = tabs.get(tabId);
+        if (tab) tab.status = "complete";
+        finishTabUpdate(tabId);
+        callback?.();
+      },
+      update(tabId, properties, callback) {
+        const tab = tabs.get(tabId) || { id: tabId, status: "complete" };
+        Object.assign(tab, properties, { status: "complete" });
+        tabs.set(tabId, tab);
+        if (tabId === sourceTabId && properties.url) {
+          visitedSearchUrls.push(properties.url);
+        }
+        finishTabUpdate(tabId);
+        callback(tab);
+      },
+      get(tabId, callback) {
+        callback(tabs.get(tabId) || { id: tabId, url: "", status: "complete" });
+      },
+      sendMessage(tabId, message, callback) {
+        const tab = tabs.get(tabId) || { id: tabId, url: "" };
+        simulationContext.chrome.runtime.lastError = null;
+        if (message.type === "GET_PAGE_STATUS") {
+          callback({
+            supported: true,
+            site: { id: "boss", name: "BOSS" },
+            url: tab.url,
+            title: tab.title || "",
+            blocking: { blocked: false, reason: "" }
+          });
+          return;
+        }
+        if (message.type === "COLLECT_CURRENT_PAGE") {
+          callback({
+            site: { id: "boss", name: "BOSS" },
+            jobs: makeJobs(tab.url),
+            nextPageUrl: "",
+            blocked: { blocked: false, reason: "" },
+            stats: { scrolls: 1, loadMoreClicks: 0, inPageNextClicks: 0, pagesVisited: 1 }
+          });
+          return;
+        }
+        if (message.type === "APPLY_CURRENT_PAGE") {
+          const job = message.automationJob || {};
+          appliedUrls.push(job.url);
+          const settings = currentSettings();
+          settings.history.applications.unshift({
+            id: job.id,
+            siteId: job.siteId,
+            siteName: job.siteName,
+            title: job.title,
+            company: job.company,
+            url: job.url,
+            score: job.score,
+            status: "applied",
+            createdAt: today
+          });
+          callback({
+            applied: true,
+            verified: true,
+            actionText: "Apply",
+            job
+          });
+          return;
+        }
+        callback({});
+      }
+    }
+  };
+
+  vm.createContext(simulationContext);
+  vm.runInContext(backgroundSource, simulationContext, { filename: "background.js" });
+  assert(messageListener, "Background message listener was not registered in simulation");
+
+  function sendRuntime(message) {
+    return new Promise((resolve) => {
+      messageListener(message, {}, resolve);
+    });
+  }
+
+  const start = await sendRuntime({ type: "START_AGENT_AUTO_APPLY", sourceTabId });
+  assert(!start.error, `Agent simulation failed to start: ${start.error || ""}`);
+  assert(start.status?.targetApplications === 150, "Agent simulation should target the full remaining daily limit");
+
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const response = await sendRuntime({ type: "GET_AUTOMATION_STATUS" });
+    if (!response.status?.running) {
+      const status = response.status;
+      assert(status.status === "completed", `Agent simulation should complete, got ${status.status}`);
+      assert(status.agent?.targetReached === true, "Agent simulation should stop because the target was reached");
+      assert(status.completed.length === 20, "Status snapshot should retain the latest 20 completed applications");
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  assert(appliedUrls.length === 150, `Agent simulation should apply exactly 150 jobs, got ${appliedUrls.length}`);
+  assert(new Set(appliedUrls).size === 150, "Agent simulation should not apply duplicate job URLs");
+  assert(
+    currentSettings().history.applications.length === 150,
+    `Application history should record 150 entries, got ${currentSettings().history.applications.length}`
+  );
+  assert(
+    visitedSearchUrls.length > 1,
+    "Agent simulation should continue across multiple planned search pages instead of stopping after one keyword"
+  );
+}
+
+await simulateAgentFillsDailyLimit();
 
 console.log("Extension verification passed.");

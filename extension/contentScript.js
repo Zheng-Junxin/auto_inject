@@ -63,6 +63,31 @@
 
   let lastScan = [];
 
+  function startBackgroundKeepAlive() {
+    let port = null;
+    const connect = () => {
+      try {
+        port = chrome.runtime.connect({ name: "auto-apply-content-keepalive" });
+        port.onDisconnect.addListener(() => {
+          port = null;
+        });
+      } catch (_error) {
+        port = null;
+      }
+    };
+    connect();
+    window.setInterval(() => {
+      try {
+        if (!port) connect();
+        port?.postMessage({ type: "ping", at: Date.now() });
+      } catch (_error) {
+        port = null;
+      }
+    }, 20000);
+  }
+
+  startBackgroundKeepAlive();
+
   function getSelectors() {
     return SELECTORS[site.id] || DEFAULT_SELECTOR_SET;
   }
@@ -810,22 +835,50 @@
 
   function detectBlockingState({ actionAvailable = false } = {}) {
     const text = shared.normalizeText(document.body.innerText.slice(0, 12000));
-    const hardBlockTerms = [
-      "captcha",
-      "\u9a8c\u8bc1\u7801",
-      "\u5b89\u5168\u9a8c\u8bc1",
-      "\u6ed1\u5757",
-      "\u8bf7\u767b\u5f55",
-      "\u767b\u5f55\u540e",
-      "\u64cd\u4f5c\u9891\u7e41",
-      "\u8bbf\u95ee\u5f02\u5e38",
-      "\u4eca\u65e5\u5df2\u8fbe",
-      "\u8fbe\u5230\u4e0a\u9650",
-      "\u4eca\u65e5\u6c9f\u901a\u5df2\u8fbe",
-      "\u8bf7\u5b8c\u6210\u8ba4\u8bc1"
+    const hasJobAction = actionAvailable || containsAnyNormalized(text, [
+      "\u7acb\u5373\u6c9f\u901a",
+      "\u7ee7\u7eed\u6c9f\u901a",
+      "\u6295\u9012",
+      "\u7533\u8bf7"
+    ]);
+    const hardBlockRules = [
+      {
+        terms: ["captcha", "\u9a8c\u8bc1\u7801", "\u5b89\u5168\u9a8c\u8bc1", "\u6ed1\u5757", "\u4eba\u673a\u9a8c\u8bc1"],
+        reason: "\u68c0\u6d4b\u5230\u9a8c\u8bc1\u7801\u6216\u5b89\u5168\u9a8c\u8bc1"
+      },
+      {
+        terms: [
+          "\u767b\u5f55/\u6ce8\u518c",
+          "\u767b\u5f55\u8d26\u53f7",
+          "\u7acb\u5373\u767b\u5f55",
+          "\u8bf7\u767b\u5f55",
+          "\u767b\u5f55\u540e",
+          "\u672a\u767b\u5f55",
+          "\u624b\u673a\u53f7\u767b\u5f55"
+        ],
+        reason: "\u68c0\u6d4b\u5230 BOSS \u767b\u5f55\u72b6\u6001\u5931\u6548\u6216\u9700\u8981\u767b\u5f55"
+      },
+      {
+        terms: ["\u64cd\u4f5c\u9891\u7e41", "\u8bbf\u95ee\u5f02\u5e38", "\u8bbf\u95ee\u8fc7\u4e8e\u9891\u7e41", "\u7a0d\u540e\u518d\u8bd5"],
+        reason: "\u68c0\u6d4b\u5230\u5e73\u53f0\u9891\u63a7\u63d0\u793a"
+      },
+      {
+        terms: ["\u4eca\u65e5\u5df2\u8fbe", "\u8fbe\u5230\u4e0a\u9650", "\u4eca\u65e5\u6c9f\u901a\u5df2\u8fbe"],
+        reason: "\u68c0\u6d4b\u5230\u5e73\u53f0\u4eca\u65e5\u6c9f\u901a\u4e0a\u9650"
+      },
+      {
+        terms: ["\u8bf7\u5b8c\u6210\u8ba4\u8bc1", "\u5b9e\u540d\u8ba4\u8bc1", "\u8eab\u4efd\u8ba4\u8bc1"],
+        reason: "\u68c0\u6d4b\u5230\u8d26\u53f7\u6216\u8ba4\u8bc1\u8981\u6c42",
+        softWhenActionAvailable: true
+      }
     ];
-    if (containsAnyNormalized(text, hardBlockTerms)) {
-      return { blocked: true, reason: "manual verification, login, rate limit, or daily limit required" };
+    for (const rule of hardBlockRules) {
+      if (containsAnyNormalized(text, rule.terms)) {
+        if (rule.softWhenActionAvailable && hasJobAction) {
+          continue;
+        }
+        return { blocked: true, reason: rule.reason };
+      }
     }
     const rules = [
       { terms: ["验证码", "安全验证", "滑块", "captcha", "人机验证"], reason: "检测到验证码或安全验证" },
@@ -856,6 +909,15 @@
     }).length;
   }
 
+  function applicationThreshold(settings, effectiveJob) {
+    const queuedThreshold = Number(effectiveJob?.applyThreshold || 0);
+    if (Number.isFinite(queuedThreshold) && queuedThreshold > 0) {
+      return queuedThreshold;
+    }
+    const hasLlmDecision = Boolean(effectiveJob?.llmDecision || effectiveJob?.llmScore);
+    return hasLlmDecision ? settings.llm.minScore : settings.filters.minScore;
+  }
+
   async function applyCurrentPage({ confirmed = false, automationJob = null } = {}) {
     const settings = await getSettings();
     const actionButton = findActionButton();
@@ -869,7 +931,7 @@
     const scored = { ...job, id: shared.makeJobId(job), ...localScore };
     const effectiveJob = automationJob ? { ...scored, ...automationJob } : scored;
     const effectiveScore = shared.effectiveApplicationScore(effectiveJob, settings);
-    const threshold = settings.llm.enabled ? settings.llm.minScore : settings.filters.minScore;
+    const threshold = applicationThreshold(settings, effectiveJob);
     const todayCount = todaysApplicationCount(settings);
 
     if (effectiveScore < threshold) {

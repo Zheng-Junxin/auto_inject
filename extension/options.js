@@ -13,6 +13,30 @@
   const historyList = document.querySelector("#historyList");
   const toast = document.querySelector("#toast");
   let settings = shared.cloneDefaultSettings();
+  let savedLlmApiKey = "";
+
+  function startBackgroundKeepAlive() {
+    let port = null;
+    const connect = () => {
+      try {
+        port = chrome.runtime.connect({ name: "auto-apply-keepalive" });
+        port.onDisconnect.addListener(() => {
+          port = null;
+        });
+      } catch (_error) {
+        port = null;
+      }
+    };
+    connect();
+    window.setInterval(() => {
+      try {
+        if (!port) connect();
+        port?.postMessage({ type: "ping", at: Date.now() });
+      } catch (_error) {
+        port = null;
+      }
+    }, 20000);
+  }
 
   function sendRuntime(message) {
     return new Promise((resolve) => chrome.runtime.sendMessage(message, resolve));
@@ -57,7 +81,7 @@
     setValue("llmEnabled", llm.enabled);
     setValue("llmBaseUrl", llm.baseUrl);
     setValue("llmModel", llm.model);
-    setValue("llmApiKey", llm.apiKey);
+    setValue("llmApiKey", "");
     setValue("llmTimeoutMs", llm.timeoutMs);
     setValue("llmMinScore", llm.minScore);
     setValue("allowSendingResumeToLlm", llm.allowSendingResumeToLlm);
@@ -78,10 +102,12 @@
     setValue("agentMaxQueries", automation.agentMaxQueries);
     setValue("agentMaxPagesPerQuery", automation.agentMaxPagesPerQuery);
     setValue("agentStartPage", automation.agentStartPage);
+    updateApiKeyPlaceholder();
     renderHistory();
   }
 
   function collectForm() {
+    const enteredApiKey = getValue("llmApiKey");
     return shared.mergeSettings({
       ...settings,
       profile: {
@@ -108,7 +134,7 @@
         enabled: getValue("llmEnabled"),
         baseUrl: getValue("llmBaseUrl"),
         model: getValue("llmModel"),
-        apiKey: getValue("llmApiKey"),
+        apiKey: enteredApiKey || savedLlmApiKey,
         timeoutMs: getValue("llmTimeoutMs"),
         minScore: getValue("llmMinScore"),
         allowSendingResumeToLlm: getValue("allowSendingResumeToLlm")
@@ -135,6 +161,14 @@
     });
   }
 
+  function updateApiKeyPlaceholder() {
+    const control = form.elements.llmApiKey;
+    if (!control) return;
+    control.placeholder = savedLlmApiKey
+      ? "Saved. Leave blank to keep it; paste a new key to replace"
+      : "Leave blank for local compatible services";
+  }
+
   function renderHistory() {
     historyList.replaceChildren();
     const applications = settings.history.applications || [];
@@ -156,6 +190,7 @@
   async function loadSettings() {
     const response = await sendRuntime({ type: "GET_SETTINGS", includeSecrets: true });
     settings = shared.mergeSettings(response && response.settings);
+    savedLlmApiKey = settings.llm.apiKey || "";
     populateForm();
   }
 
@@ -163,6 +198,7 @@
     settings = collectForm();
     const response = await sendRuntime({ type: "SAVE_SETTINGS", settings });
     settings = shared.mergeSettings({ ...settings, ...(response && response.settings), llm: settings.llm });
+    savedLlmApiKey = settings.llm.apiKey || savedLlmApiKey;
     populateForm();
     showToast("设置已保存");
   }
@@ -184,6 +220,29 @@
       }
     }
     return changed;
+  }
+
+  function applyGeneratedMatchRules(rules = {}) {
+    const changed = [];
+    for (const [name, value] of Object.entries({
+      includeKeywords: rules.includeKeywords,
+      excludeKeywords: rules.excludeKeywords,
+      preferredCities: rules.preferredCities,
+      minScore: rules.minScore
+    })) {
+      if (value !== undefined && value !== null && String(value).trim() !== "") {
+        setValue(name, value);
+        changed.push(name);
+      }
+    }
+    return changed;
+  }
+
+  function applyLlmResumeParse(response = {}) {
+    return [
+      ...applyResumeHints(response.profile || {}),
+      ...applyGeneratedMatchRules(response.rules || {})
+    ];
   }
 
   function requestPermission(details) {
@@ -210,9 +269,48 @@
     return validation;
   }
 
+  async function parseResumeWithOptionalLlm(event) {
+    event?.stopImmediatePropagation();
+    try {
+      parseResumeButton.disabled = true;
+      const file = resumeFileInput.files && resumeFileInput.files[0];
+      const result = await resumeParser.parseResumeFile(file);
+      const changed = applyResumeHints(result.hints);
+      const messages = [];
+      settings = collectForm();
+      await sendRuntime({ type: "SAVE_SETTINGS", settings });
+
+      if (settings.llm.enabled && settings.llm.allowSendingResumeToLlm) {
+        try {
+          await ensureLlmOriginPermission(settings);
+          const response = await sendRuntime({ type: "PARSE_RESUME_WITH_LLM", resumeText: result.text });
+          if (response && response.error) {
+            throw new Error(response.error);
+          }
+          changed.push(...applyLlmResumeParse(response));
+          messages.push(response.message || "LLM resume parsing completed");
+        } catch (error) {
+          messages.push(`LLM resume parsing failed; local parse kept: ${error.message || String(error)}`);
+        }
+      }
+
+      settings = collectForm();
+      await sendRuntime({ type: "SAVE_SETTINGS", settings });
+      const suffix = result.warnings.length ? ` ${result.warnings.join(" ")}` : "";
+      const llmSuffix = messages.length ? ` ${messages.join(" ")}` : "";
+      showToast(`Resume parsed. Updated ${changed.length} fields.${suffix}${llmSuffix}`);
+    } catch (error) {
+      showToast(error.message || String(error));
+    } finally {
+      parseResumeButton.disabled = false;
+    }
+  }
+
   saveButton.addEventListener("click", async () => {
     await saveSettings();
   });
+
+  parseResumeButton.addEventListener("click", parseResumeWithOptionalLlm, { capture: true });
 
   parseResumeButton.addEventListener("click", async () => {
     try {
@@ -253,11 +351,7 @@
       if (response && response.error) {
         throw new Error(response.error);
       }
-      const rules = response.rules || {};
-      setValue("includeKeywords", rules.includeKeywords);
-      setValue("excludeKeywords", rules.excludeKeywords);
-      setValue("preferredCities", rules.preferredCities);
-      setValue("minScore", rules.minScore);
+      applyGeneratedMatchRules(response.rules || {});
       settings = collectForm();
       await sendRuntime({ type: "SAVE_SETTINGS", settings });
       showToast(response.message || "LLM 已生成匹配规则");
@@ -278,4 +372,5 @@
   });
 
   loadSettings();
+  startBackgroundKeepAlive();
 })();
